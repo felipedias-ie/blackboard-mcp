@@ -100,7 +100,7 @@ export function discoverProfiles(): BrowserProfile[] {
         if (!existsSync(db)) continue;
         found.push({
           browser,
-          label: `${browser}. ${dir}`,
+          label: `${browser} (${dir})`,
           cookieDb: db,
           localState: existsSync(localState) ? localState : undefined,
           family: 'chromium',
@@ -176,14 +176,16 @@ async function queryCookieDb(
     const db = new DatabaseSync(tmp, { readOnly: false });
     try {
       const byName = opts.byName;
+      // Match on a dot boundary. A bare `LIKE '%example.edu'` would also match
+      // `evilexample.edu`, handing that domain's cookies to the importer.
       const like = byName
         ? byName.map(() => 'name = ?').join(' OR ')
-        : hosts.map(() => 'host_key LIKE ?').join(' OR ');
-      const params = byName ?? hosts.map((h) => `%${h}`);
+        : hosts.map(() => '(host_key = ? OR host_key = ? OR host_key LIKE ?)').join(' OR ');
+      const params = byName ?? hosts.flatMap((h) => [h, `.${h}`, `%.${h}`]);
       if (profile.family === 'firefox') {
         const clause = byName
           ? byName.map(() => 'name = ?').join(' OR ')
-          : hosts.map(() => 'host LIKE ?').join(' OR ');
+          : hosts.map(() => '(host = ? OR host = ? OR host LIKE ?)').join(' OR ');
         const stmt = db.prepare(
           `SELECT host, name, value, path, isSecure, isHttpOnly, expiry FROM moz_cookies WHERE ${clause}`,
         );

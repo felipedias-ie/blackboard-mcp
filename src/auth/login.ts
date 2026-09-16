@@ -13,7 +13,7 @@ import {
   discoverProfiles, discoverInstances, readBrowserCookies, IDP_COOKIE_HOSTS,
   type BrowserProfile,
 } from './browsers.js';
-import { refreshSession } from './saml.js';
+import { refreshSession, discoverIdpHosts } from './saml.js';
 
 /**
  * Extracts a `Cookie` header value from pasted input.
@@ -180,12 +180,23 @@ export async function loginFromBrowser(
     const baseUrl = normaliseBaseUrl(candidate.host);
     log.debug(`Trying ${baseUrl} from ${candidate.profile.label}`);
 
+    // Ask Blackboard which provider it federates to, rather than guessing.
+    // An unauthenticated probe names the host exactly, so only that provider's
+    // cookies are read. The hardcoded list is a fallback for when the probe
+    // cannot reach the instance.
+    const discovered = await discoverIdpHosts(baseUrl)
+      .then((r) => r.hosts)
+      .catch(() => [] as string[]);
+    const idpHosts = discovered.length > 0 ? discovered : IDP_COOKIE_HOSTS;
+    if (discovered.length > 0) {
+      log.info(`Identity provider for ${candidate.host}: ${discovered.join(', ')}`);
+    } else {
+      log.debug('Provider probe found nothing; falling back to the known-provider list');
+    }
+
     let session: Session;
     try {
-      const cookies = await readBrowserCookies(candidate.profile, [
-        candidate.host,
-        ...IDP_COOKIE_HOSTS,
-      ]);
+      const cookies = await readBrowserCookies(candidate.profile, [candidate.host, ...idpHosts]);
       session = await Session.fromBrowserCookies(baseUrl, cookies, {});
     } catch (err) {
       failures.push(`${candidate.host} (${candidate.profile.label}): ${(err as Error).message}`);

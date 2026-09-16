@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { CookieJar, Cookie } from 'tough-cookie';
 
-import { parseAutoSubmitForm } from '../dist/auth/saml.js';
+import { parseAutoSubmitForm, discoverIdpHosts } from '../dist/auth/saml.js';
 import { chromeTimeToMs, toCookieHeader, isInfrastructureHost, kwalletFolder } from '../dist/auth/browsers.js';
 import { extractXsrf } from '../dist/auth/session.js';
 import { displayName } from '../dist/client/index.js';
@@ -218,5 +218,19 @@ describe('KWallet key lookup', () => {
 
   test('leaves an unrecognised service name untouched', () => {
     assert.equal(kwalletFolder('Something Else'), 'Something Else');
+  });
+});
+
+describe('identity provider discovery', () => {
+  test('is exported and callable without any stored credentials', async () => {
+    // The whole point is that this runs before anything is read from the
+    // browser, so it must not require a session, and must fail soft.
+    assert.equal(typeof discoverIdpHosts, 'function');
+    const result = await discoverIdpHosts('https://blackboard.invalid.example', { maxHops: 1 });
+    assert.ok(Array.isArray(result.hosts), 'hosts should always be an array');
+    assert.ok(Array.isArray(result.hops), 'hops should always be an array');
+    // An unreachable host yields nothing rather than throwing, so login can
+    // fall back to the known-provider list.
+    assert.equal(result.hosts.length, 0);
   });
 });

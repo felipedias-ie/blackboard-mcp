@@ -392,3 +392,67 @@ async function dropSessionCookies(jar: CookieJar, baseUrl: string): Promise<void
     rebuilt as unknown as { store: unknown }
   ).store;
 }
+
+/**
+ * Discovers which identity provider a Blackboard instance federates to, by
+ * walking its login redirect **without any credentials**.
+ *
+ * An unauthenticated `GET /ultra` still 302s all the way to the provider's
+ * sign-in page, and every hop names a host. That makes the provider knowable
+ * before any cookie is read, which matters: the alternative is guessing, either
+ * from a hardcoded list of well-known providers (which misses institutions
+ * running their own SSO) or by sweeping a whole registrable domain (which
+ * collects cookies for every unrelated service the institution hosts).
+ *
+ * Sends no cookies and reads no browser state, so it is safe to call before the
+ * user has been asked for anything.
+ */
+export async function discoverIdpHosts(
+  baseUrl: string,
+  opts: { userAgent?: string; maxHops?: number } = {},
+): Promise<{ hosts: string[]; hops: string[] }> {
+  const baseHost = new URL(baseUrl).hostname;
+  const hosts = new Set<string>();
+  const hops: string[] = [];
+  let url = `${baseUrl}/ultra`;
+
+  for (let hop = 0; hop < (opts.maxHops ?? 10); hop += 1) {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      break;
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        redirect: 'manual',
+        // No cookies, no credentials: this is a pure discovery probe.
+        credentials: 'omit',
+        headers: {
+          'User-Agent': opts.userAgent ?? DEFAULT_PROBE_UA,
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      log.debug(`IdP probe stopped at ${target.hostname}`, (err as Error).message);
+      break;
+    }
+
+    hops.push(`${target.hostname}${target.pathname} -> ${res.status}`);
+    if (target.hostname !== baseHost) hosts.add(target.hostname);
+
+    if (res.status < 300 || res.status >= 400) break;
+    const loc = res.headers.get('location');
+    if (!loc) break;
+    url = new URL(loc, url).toString();
+  }
+
+  log.debug('Discovered identity provider hosts', [...hosts]);
+  return { hosts: [...hosts], hops };
+}
+
+const DEFAULT_PROBE_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
