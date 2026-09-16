@@ -26,7 +26,7 @@ import { log, redact } from '../lib/logger.js';
  * single provider.
  */
 
-const MAX_HOPS = 20;
+const MAX_HOPS = 40;
 
 /** Cookies whose presence means Blackboard considers us signed in. */
 const SESSION_COOKIES = ['BbRouter', 'JSESSIONID'];
@@ -278,20 +278,31 @@ export function parseAutoSubmitForm(html: string, baseUrl: string): ParsedForm |
   if (!autoSubmits) return null;
 
   return {
-    action: new URL(action, baseUrl).toString(),
+    action: new URL(decodeHtmlAttr(action), baseUrl).toString(),
     method: method === 'GET' ? 'GET' : 'POST',
     fields,
   };
 }
 
 function decodeHtmlAttr(v: string): string {
-  return v
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)));
+  return (
+    v
+      // Numeric entities first: decoding `&amp;` before them would turn
+      // `&amp;#x2f;` into `/` instead of the literal `&#x2f;`.
+      .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => {
+        const code = parseInt(h, 16);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+      })
+      .replace(/&#(\d+);/g, (_, d: string) => {
+        const code = Number(d);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+      })
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&')
+  );
 }
 
 /** Azure AD serves a JS bootstrap page that retries itself with `sso_reload`. */

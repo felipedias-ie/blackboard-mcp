@@ -30,6 +30,25 @@ describe('SSO handoff form parsing', () => {
     assert.equal(form?.fields.get('RelayState'), 'abc&def');
   });
 
+  test('decodes HTML entities in the form action', () => {
+    // WSO2 and ADFS emit the action as character references. Posting the raw
+    // string sends the handoff to a mangled URL and loops forever.
+    const html = `<body onload="document.forms[0].submit()">
+      <form method="POST" action="https&#x3a;&#x2f;&#x2f;login.example.edu&#x2f;samlsso">
+        <input type="hidden" name="SAMLRequest" value="abc"></form></body>`;
+    const form = parseAutoSubmitForm(html, 'https://blackboard.example.edu/auth-saml/saml/login');
+    assert.equal(form?.action, 'https://login.example.edu/samlsso');
+  });
+
+  test('decodes numeric entities before named ones', () => {
+    // `&amp;#x2f;` must stay the literal text `&#x2f;`, not become `/`.
+    const html = `<body onload="document.forms[0].submit()">
+      <form method="POST" action="https://idp.example/x">
+        <input type="hidden" name="SAMLRequest" value="&amp;#x2f;"></form></body>`;
+    const form = parseAutoSubmitForm(html, 'https://idp.example/');
+    assert.equal(form?.fields.get('SAMLRequest'), '&#x2f;');
+  });
+
   test('resolves a relative action against the current URL', () => {
     const html = `<body onload="document.forms[0].submit()">
       <form method="POST" action="/Shibboleth.sso/SAML2/POST">
