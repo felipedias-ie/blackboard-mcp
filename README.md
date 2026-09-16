@@ -123,27 +123,63 @@ blackboard-mcp auth status
 blackboard-mcp doctor      # full diagnostics
 ```
 
-## Registering with a client
+## Clients
+
+Auth is **not per client**. `blackboard-mcp auth login` stores one encrypted session in `~/.blackboard-mcp/`, and every client on that machine reads it. Sign in once, then register the server wherever you want it.
 
 ```bash
-blackboard-mcp install                  # print config for every known client
-blackboard-mcp install cursor --write   # merge into Cursor's config
+blackboard-mcp auth login                # once, per machine
+blackboard-mcp install                   # print config for every known client
+blackboard-mcp install cursor --write    # or merge it in automatically
 ```
 
-Supported: `claude-code`, `claude-desktop`, `cursor`, `codex`, `vscode`, `windsurf`, `zed`.
+`--write` merges into the existing config rather than overwriting it.
 
-`--write` merges into the existing config rather than overwriting it. Codex uses TOML, which is printed for you to paste.
+### What works where
 
-<details>
-<summary>Manual configuration</summary>
+This is a **local** MCP server. It runs on your machine over stdio, because it reads your browser session and your Blackboard files, neither of which exists on a server somewhere.
 
-**Claude Code**
+| Client | Supported | How |
+|---|---|---|
+| Claude Code (terminal) | yes | `claude mcp add` |
+| Claude Code (desktop app) | yes | same config as the terminal |
+| Claude Desktop | yes | `claude_desktop_config.json` |
+| Codex CLI | yes | `~/.codex/config.toml` |
+| Cursor | yes | `~/.cursor/mcp.json` |
+| Windsurf | yes | `~/.codeium/windsurf/mcp_config.json` |
+| VS Code (Copilot) | yes | `.vscode/mcp.json` |
+| Zed | yes | `settings.json` |
+| claude.ai in a browser | **no** | accepts remote servers only |
+| Claude for Work / Team / Enterprise (web) | **no** | remote only, plus admin approval |
+| ChatGPT (web) | **no** | remote only |
+| Codex cloud | **no** | runs server-side, no access to your machine |
+
+The four "no" rows are all the same limitation, explained under [Web clients](#web-clients) below.
+
+### Claude Code
+
+Terminal, and the desktop app's Code tab, share `~/.claude.json`, so one command covers both:
+
 ```bash
-claude mcp add blackboard -- npx -y blackboard-mcp
+claude mcp add blackboard --scope user -- npx -y blackboard-mcp
 ```
 
-**Claude Desktop**, at `~/Library/Application Support/Claude/claude_desktop_config.json`
-(`%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+`--scope user` makes it available in every project. Drop it to scope the server to the current directory only, or use `--scope project` to write a `.mcp.json` your teammates get too. Restart the desktop app to pick up a change made in the terminal.
+
+Verify:
+
+```bash
+claude mcp list
+```
+
+### Claude Desktop
+
+Edit `claude_desktop_config.json`:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
+
 ```json
 {
   "mcpServers": {
@@ -152,9 +188,44 @@ claude mcp add blackboard -- npx -y blackboard-mcp
 }
 ```
 
-**Cursor** (`~/.cursor/mcp.json`) and **Windsurf** (`~/.codeium/windsurf/mcp_config.json`) use the same shape.
+Restart Claude Desktop fully, then look for the tools under the attachments menu.
 
-**VS Code**, at `.vscode/mcp.json`. Note the key is `servers`:
+### Codex CLI
+
+Add to `~/.codex/config.toml`. Note the key is `mcp_servers`, with an underscore:
+
+```toml
+[mcp_servers.blackboard]
+command = "npx"
+args = ["-y", "blackboard-mcp"]
+```
+
+Or let the CLI write it:
+
+```bash
+codex mcp add blackboard -- npx -y blackboard-mcp
+```
+
+### Cursor and Windsurf
+
+Same shape as Claude Desktop, different file:
+
+- Cursor, all projects: `~/.cursor/mcp.json`
+- Cursor, one project: `.cursor/mcp.json`
+- Windsurf: `~/.codeium/windsurf/mcp_config.json`
+
+```json
+{
+  "mcpServers": {
+    "blackboard": { "command": "npx", "args": ["-y", "blackboard-mcp"] }
+  }
+}
+```
+
+### VS Code
+
+`.vscode/mcp.json` in the workspace. The top-level key is `servers`, not `mcpServers`:
+
 ```json
 {
   "servers": {
@@ -163,13 +234,51 @@ claude mcp add blackboard -- npx -y blackboard-mcp
 }
 ```
 
-**Codex CLI**, at `~/.codex/config.toml`:
-```toml
-[mcp_servers.blackboard]
-command = "npx"
-args = ["-y", "blackboard-mcp"]
+### Zed
+
+In `settings.json`, under `context_servers`:
+
+```json
+{
+  "context_servers": {
+    "blackboard": {
+      "source": "custom",
+      "command": { "path": "npx", "args": ["-y", "blackboard-mcp"] }
+    }
+  }
+}
 ```
-</details>
+
+Zed's schema for this has changed between releases, so if it does not pick the server up, check Zed's current context-server docs. Every other client in this list uses the flat `{"command": "npx", "args": [...]}` form.
+
+### Any other MCP client
+
+The server speaks MCP over stdio. Anything that can launch a subprocess can use it:
+
+```
+command: npx
+args:    ["-y", "blackboard-mcp"]
+```
+
+Optional environment: `BLACKBOARD_MCP_ALLOW_WRITES=1` to permit writes, `BLACKBOARD_MCP_LOG_LEVEL=debug` to troubleshoot. Everything else is read from `~/.blackboard-mcp/`.
+
+To confirm a client can talk to it, run the official inspector:
+
+```bash
+npx @modelcontextprotocol/inspector npx -y blackboard-mcp
+```
+
+### Web clients
+
+claude.ai in a browser, Claude for Work on the web, ChatGPT on the web and Codex cloud all reach MCP servers over **HTTP, at a public URL**. They cannot launch a process on your laptop, which is the only place your Blackboard session exists. So this server does not work in any of them today, and no configuration change makes it work.
+
+Closing that gap means running the server as a hosted HTTP service, which has a consequence worth being explicit about: that service would hold your Blackboard session, and anyone who reached its URL could read your grades and coursework. It would need its own authentication in front of it, and you would be trusting a host with your student credentials.
+
+If you want that, the honest options are:
+
+1. **Keep it local.** Use a desktop or terminal client. This is what the package is designed for.
+2. **Run it yourself** behind a tunnel plus authentication, with the session staying on hardware you control.
+3. **Use the official Blackboard REST API instead** for anything hosted. It uses OAuth rather than a borrowed session, which is the right shape for a web integration, though it requires an app your institution's Blackboard administrator has approved.
 
 ## Tools
 

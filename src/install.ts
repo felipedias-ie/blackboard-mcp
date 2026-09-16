@@ -122,6 +122,23 @@ export function serverEntry(opts: { local?: boolean; allowWrites?: boolean } = {
   return entry;
 }
 
+/**
+ * Per-client entry shape.
+ *
+ * Every client but Zed accepts `{command, args}` directly. Zed nests the launch
+ * command under `command: {path, args}`. Its schema has shifted between
+ * releases, so treat the Zed output as a starting point rather than gospel.
+ */
+function shapeFor(client: ClientSpec, entry: ServerEntry): Record<string, unknown> {
+  if (client.id === 'zed') {
+    return {
+      source: 'custom',
+      command: { path: entry.command, args: entry.args, ...(entry.env ? { env: entry.env } : {}) },
+    };
+  }
+  return { ...entry };
+}
+
 /** Renders the TOML block Codex expects. */
 export function tomlBlock(entry: ServerEntry): string {
   const lines = [
@@ -178,7 +195,8 @@ export function install(
     };
   }
 
-  const snippet = JSON.stringify({ [client.key]: { blackboard: entry } }, null, 2);
+  const payload = shapeFor(client, entry);
+  const snippet = JSON.stringify({ [client.key]: { blackboard: payload } }, null, 2);
 
   if (!opts.write || !client.configPath) {
     return {
@@ -207,7 +225,7 @@ export function install(
 
   const bucket = (existing[client.key] as Record<string, unknown> | undefined) ?? {};
   const already = bucket.blackboard !== undefined;
-  bucket.blackboard = entry;
+  bucket.blackboard = payload;
   existing[client.key] = bucket;
 
   mkdirSync(dirname(client.configPath), { recursive: true });
