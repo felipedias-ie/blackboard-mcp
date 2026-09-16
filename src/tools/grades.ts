@@ -5,6 +5,7 @@ import {
   courseLabel, type BbGrade, type BbGradeColumn, type BbGradeSchema, type Paged,
 } from '../client/index.js';
 import { htmlToText } from '../lib/extract.js';
+import { BlackboardError } from '../lib/errors.js';
 import { fmtBytes } from '../lib/files.js';
 
 /** Best display string for a grade cell, across the several shapes it takes. */
@@ -47,6 +48,16 @@ function letterGrade(
     if (aboveLo && belowHi) return sym.text;
   }
   return undefined;
+}
+
+
+/** Writes are off by default; every write tool goes through this. */
+function assertWritesEnabled(allowed: boolean): void {
+  if (!allowed) {
+    throw new BlackboardError('FORBIDDEN', 'Writes are disabled on this server.', {
+      hint: 'This server is read-only unless BLACKBOARD_MCP_ALLOW_WRITES=1 is set in its environment. Submitting coursework is deliberately opt-in.',
+    });
+  }
 }
 
 export function registerGradeTools(server: McpServer): void {
@@ -281,7 +292,7 @@ export function registerGradeTools(server: McpServer): void {
                           .join(', ')
                       : undefined,
                   },
-                  { field: 'receipt', value: a.attemptReceipt?.confirmationNumber },
+                  { field: 'receipt', value: a.attemptReceipt?.receiptId },
                 ]),
                 submitted ? `\n**Submitted text:**\n\n${clip(submitted, 2000)}` : '',
                 feedback ? `\n**Instructor feedback:**\n\n${clip(feedback, 2000)}` : '',
@@ -389,6 +400,133 @@ export function registerGradeTools(server: McpServer): void {
           table(rows),
           '',
           '_Averages are unweighted point totals over graded items only. A course\'s official weighted grade may differ. Check its final grade column._',
+        ].join('\n'),
+      );
+    }),
+  );
+  // ── writes ──────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    'bb_save_draft',
+    {
+      title: 'Save a draft submission',
+      description:
+        'Saves text onto an assignment as a DRAFT, without submitting it. The instructor does not see a draft, and it can be overwritten or submitted later. Use this to stage work, and bb_submit_assignment to actually hand it in. Requires writes to be enabled.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        columnId: z.string().describe('Gradebook column id of the assignment, from bb_list_grades.'),
+        text: z.string().min(1).describe('The submission text. Plain text or simple HTML.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    guard('bb_save_draft', async ({ courseId, columnId, text: body }) => {
+      const client = await getClient();
+      assertWritesEnabled(client.config.allowWrites);
+
+      const column = await client.getGradeColumn(courseId, columnId);
+      const draft = await client.createDraftAttempt(courseId, columnId);
+      const saved = await client.writeAttempt(courseId, draft.id, {
+        text: body,
+        submit: false,
+        scoreProviderHandle: column.scoreProviderHandle,
+      });
+
+      return text(
+        [
+          `Draft saved for **${columnName(column)}**. Not submitted.`,
+          '',
+          table([
+            { field: 'attemptId', value: saved.id },
+            { field: 'status', value: saved.status },
+            { field: 'characters', value: body.length },
+            { field: 'due', value: column.dueDate ? `${when(column.dueDate)} (${relativeDue(column.dueDate)})` : undefined },
+          ]),
+          '',
+          `_The instructor cannot see a draft. To hand it in, call \`bb_submit_assignment\` with courseId, columnId and confirm: true._`,
+        ].join('\n'),
+      );
+    }),
+  );
+
+  server.registerTool(
+    'bb_submit_assignment',
+    {
+      title: 'Submit an assignment',
+      description:
+        'SUBMITS text to an assignment for grading. This is visible to the instructor immediately and CANNOT be undone through this API. Requires writes to be enabled AND confirm: true. Never call this speculatively or to "test" anything. Text only: file attachments are not supported. Check the due date and any existing submission first with bb_get_grade_detail.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        columnId: z.string().describe('Gradebook column id of the assignment, from bb_list_grades.'),
+        text: z.string().min(1).describe('The work to submit. Plain text or simple HTML.'),
+        confirm: z
+          .boolean()
+          .describe('Must be true. Set this only when the user has explicitly asked to submit this specific assignment.'),
+        allowResubmit: z
+          .boolean()
+          .optional()
+          .describe('Permit submitting when an attempt already exists. Default false, which refuses rather than overwrite.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    guard('bb_submit_assignment', async (args) => {
+      const client = await getClient();
+      assertWritesEnabled(client.config.allowWrites);
+
+      if (args.confirm !== true) {
+        throw new BlackboardError('BAD_INPUT', 'Submission refused: confirm was not true.', {
+          hint: 'Submitting is irreversible and visible to the instructor. Ask the user to confirm this specific assignment, then pass confirm: true.',
+        });
+      }
+
+      const column = await client.getGradeColumn(args.courseId, args.columnId);
+      const label = columnName(column);
+
+      // Refuse to walk over existing work unless told to. An accidental
+      // resubmission can replace a real submission with worse content.
+      const existing = await client.getColumnGrades(args.courseId, args.columnId).catch(() => []);
+      const prior = existing[0];
+      const alreadySubmitted =
+        prior?.status === 'GRADED' ||
+        prior?.status === 'NEEDS_GRADING' ||
+        (prior?.lastAttemptId != null && prior.lastAttemptId !== '');
+
+      if (alreadySubmitted && !args.allowResubmit) {
+        throw new BlackboardError('FORBIDDEN', `"${label}" already has a submission.`, {
+          hint: `Status is ${prior?.status ?? 'unknown'}. Inspect it with bb_get_grade_detail. If the user genuinely wants to submit again, pass allowResubmit: true, and note that attempts allowed is ${column.multipleAttempts ?? 'unknown'}.`,
+        });
+      }
+
+      const draft = await client.createDraftAttempt(args.courseId, args.columnId);
+      const result = await client.writeAttempt(args.courseId, draft.id, {
+        text: args.text,
+        submit: true,
+        scoreProviderHandle: column.scoreProviderHandle,
+      });
+
+      const receipt = result.attemptReceipt;
+      const submitted = receipt?.receiptId !== undefined;
+
+      return text(
+        [
+          submitted ? `# Submitted: ${label}` : `# Submission may not have completed: ${label}`,
+          '',
+          table([
+            { field: 'status', value: result.status },
+            { field: 'receipt', value: receipt?.receiptId ?? '(none returned)' },
+            { field: 'submitted at', value: when(receipt?.submissionDate ?? result.attemptDate) },
+            { field: 'late', value: receipt?.lateSubmission === true ? 'YES' : 'no' },
+            { field: 'size', value: receipt?.submissionTotalSize ? fmtBytes(receipt.submissionTotalSize) : undefined },
+            { field: 'attemptId', value: result.id },
+            { field: 'due', value: column.dueDate ? `${when(column.dueDate)} (${relativeDue(column.dueDate)})` : undefined },
+            { field: 'points possible', value: column.possible },
+          ]),
+          '',
+          receipt?.lateSubmission === true
+            ? '**This was recorded as a late submission.**'
+            : '',
+          submitted
+            ? `Keep the receipt id as proof of submission. Verify independently with \`bb_get_grade_detail\` for columnId ${args.columnId}.`
+            : 'No receipt came back, so treat this as unconfirmed and check in Blackboard directly.',
         ].join('\n'),
       );
     }),

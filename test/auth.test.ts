@@ -33,7 +33,7 @@ describe('SSO handoff form parsing', () => {
   });
 
   test('decodes HTML entities in the form action', () => {
-    // WSO2 and ADFS emit the action as character references. Posting the raw
+    // Some identity providers emit the action as character references. Posting the raw
     // string sends the handoff to a mangled URL and loops forever.
     const html = `<body onload="document.forms[0].submit()">
       <form method="POST" action="https&#x3a;&#x2f;&#x2f;login.example.edu&#x2f;samlsso">

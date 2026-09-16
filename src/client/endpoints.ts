@@ -79,7 +79,13 @@ export const DEFAULT_ENDPOINTS = {
   grades: '/learn/api/v1/courses/{courseId}/gradebook/grades',
   columnGrades: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/grades',
   attempt: '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}',
+  /**
+   * GET lists a column's attempts. POST creates a draft attempt, which is the
+   * first half of submitting work; the body carries `status: "IN_PROGRESS"`.
+   */
   columnAttempts: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/attempts',
+  /** Per-student due-date exceptions. POST with `{membershipIds:[...]}` reads them. */
+  columnExceptions: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/exceptions',
   attemptFiles:
     '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/attempts/{attemptId}/files',
   attemptFileDownload:

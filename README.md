@@ -343,6 +343,17 @@ Every course tool takes a `courseId`, an internal id like `_12345_1` rather than
 | `bb_list_endpoints` | Every endpoint this server knows |
 | `bb_mark_reviewed` | Mark content reviewed (write, off by default) |
 
+### Writes
+
+Off unless `BLACKBOARD_MCP_ALLOW_WRITES=1` is set.
+
+| Tool | Purpose |
+|---|---|
+| `bb_save_draft` | Save text as a draft, not visible to the instructor, reversible |
+| `bb_submit_assignment` | Submit for grading. Irreversible, and requires `confirm: true` |
+
+`bb_submit_assignment` has three gates: writes must be enabled, `confirm` must be `true`, and it refuses when an attempt already exists unless you pass `allowResubmit`. It returns Blackboard's receipt id, which is your proof of submission, and flags a late submission. Text only, since the file upload flow is not implemented.
+
 The Ultra API is larger than what's wrapped here. `bb_raw_request` is the answer when the tool you need doesn't exist.
 
 ## Prompts
@@ -496,7 +507,8 @@ pnpm inspect         # MCP Inspector against the built server
 
 ## Limitations
 
-- **Read-only** for all practical purposes. Submitting assignments, posting discussion replies and sending messages aren't implemented: the write paths weren't captured, and getting a submission wrong has real consequences.
+- **Read-only by default.** Assignment submission exists but is off unless you enable writes, and it is text only. Posting discussion replies and sending messages aren't implemented.
+- **No file attachments on submissions.** The upload flow has not been captured, so a submission carries text only. Do not rely on it for work that must include a file.
 - **Auto-renewal needs a browser-imported session.** A `--paste` session has no identity provider cookies and will expire in a few hours.
 - **Office formats** download but don't extract.
 - **No OCR** for scanned PDFs.

@@ -150,3 +150,40 @@ test('an unauthenticated tool call returns a hint, not a crash', async () => {
   assert.match(body, /NOT_CONFIGURED|NOT_AUTHENTICATED/, 'should name the error code');
   assert.match(body, /auth login/, 'should tell the user how to fix it');
 });
+
+test('the submission tool is declared as destructive and demands confirmation', async () => {
+  const responses = await rpc([
+    initialize,
+    initialized,
+    { jsonrpc: '2.0', id: 6, method: 'tools/list' },
+  ]);
+  const tools = (responses.find((r) => r.id === 6)?.result?.tools ?? []) as Array<{
+    name: string;
+    description?: string;
+    annotations?: Record<string, unknown>;
+    inputSchema?: { required?: string[]; properties?: Record<string, unknown> };
+  }>;
+
+  const submit = tools.find((t) => t.name === 'bb_submit_assignment');
+  assert.ok(submit, 'bb_submit_assignment should be registered');
+
+  // A client showing tool annotations must be able to warn before this runs.
+  assert.equal(submit.annotations?.readOnlyHint, false);
+  assert.equal(submit.annotations?.destructiveHint, true);
+  assert.equal(submit.annotations?.idempotentHint, false);
+
+  // `confirm` must be required, so a model cannot submit by omitting it.
+  assert.ok(
+    submit.inputSchema?.required?.includes('confirm'),
+    'confirm must be a required parameter',
+  );
+
+  // The description has to state the irreversibility, since that is the only
+  // signal a model gets before deciding to call it.
+  assert.match(submit.description ?? '', /CANNOT be undone|irreversible/i);
+
+  // Saving a draft is the safe counterpart and must not be flagged destructive.
+  const draft = tools.find((t) => t.name === 'bb_save_draft');
+  assert.ok(draft, 'bb_save_draft should be registered');
+  assert.equal(draft.annotations?.destructiveHint, false);
+});

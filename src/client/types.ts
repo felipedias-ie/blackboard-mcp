@@ -330,7 +330,7 @@ export interface BbAttempt {
   modifiedDate?: string;
   attemptFirstGradedDate?: string;
   attemptLastGradedDate?: string;
-  attemptReceipt?: { confirmationNumber?: string; [k: string]: unknown };
+  attemptReceipt?: BbAttemptReceipt;
   permissions?: Record<string, boolean>;
 }
 
@@ -506,4 +506,24 @@ export interface BbGradeSchema {
     /** Value written back when an instructor picks this symbol. */
     absoluteValue?: number;
   }>;
+}
+
+
+// ── submission ────────────────────────────────────────────────────────────
+
+/**
+ * Proof that Blackboard accepted a submission.
+ *
+ * `receiptId` is the confirmation number a student sees after submitting, and
+ * is the only durable evidence the submission landed, so it is always surfaced.
+ */
+export interface BbAttemptReceipt {
+  receiptId?: string;
+  submissionDate?: string;
+  submissionTotalSize?: number;
+  /** "MANUALLY_SUBMITTED" for a student submission. */
+  submissionType?: string;
+  /** True when Blackboard considers this past the due date. */
+  lateSubmission?: boolean;
+  [k: string]: unknown;
 }

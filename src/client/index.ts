@@ -539,6 +539,77 @@ export class BlackboardClient {
     }
   }
 
+
+  // ── submission (writes) ─────────────────────────────────────────────────
+
+  /**
+   * Creates, or returns, the in-progress draft attempt for a gradebook column.
+   *
+   * Blackboard treats submitting as two steps: an attempt in `IN_PROGRESS`
+   * holds the draft, and a later status change to `NEEDS_GRADING` submits it.
+   * Calling this when a draft already exists returns that same attempt rather
+   * than creating a duplicate, so it is safe to call more than once.
+   *
+   * `scoreProviderHandle` is read off the column rather than hardcoded: it
+   * varies by assignment type, and sending the wrong one is rejected.
+   */
+  async createDraftAttempt(courseId: string, columnId: string): Promise<BbAttempt> {
+    const column = await this.getGradeColumn(courseId, columnId);
+    const handle = column.scoreProviderHandle ?? 'resource/x-bb-assessment';
+
+    return this.http.json<BbAttempt>({
+      method: 'POST',
+      path: expand('columnAttempts', { courseId, columnId }),
+      body: {
+        stagedAttemptGrades: [],
+        scoreProviderHandle: {
+          name: handle,
+          iconClass: 'test',
+          contentHandlers: ['resource/x-bb-asmt-test-link'],
+          needsGradingIcon: 'grades',
+          needsReconcilingIcon: 'grades',
+        },
+        status: 'IN_PROGRESS',
+        toolAttemptDetail: { [handle]: { type: 'Test' } },
+      },
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+    });
+  }
+
+  /**
+   * Writes text onto an attempt, either saving a draft or submitting it.
+   *
+   * `submit: false` leaves the attempt `IN_PROGRESS` and is reversible.
+   * `submit: true` moves it to `NEEDS_GRADING`, which is what an instructor
+   * sees as a submission, and is **not** reversible by this API.
+   *
+   * File attachments are not supported: `studentSubmissionFiles` is always sent
+   * empty, because the upload flow has never been captured and guessing at it
+   * risks a submission that looks complete but carries no work.
+   */
+  async writeAttempt(
+    courseId: string,
+    attemptId: string,
+    opts: { text: string; submit: boolean; scoreProviderHandle?: string },
+  ): Promise<BbAttempt> {
+    const handle = opts.scoreProviderHandle ?? 'resource/x-bb-assessment';
+    return this.http.json<BbAttempt>({
+      method: 'PATCH',
+      path: expand('attempt', { courseId, attemptId }),
+      query: {
+        saveBeforeSubmitAndPost: opts.submit,
+        expand: 'toolAttemptDetail,attemptReceipt.lateSubmission',
+      },
+      body: {
+        status: opts.submit ? 'NEEDS_GRADING' : 'IN_PROGRESS',
+        toolAttemptDetail: { [handle]: { type: 'Test', scoreProviderHandle: handle } },
+        studentSubmission: { rawText: opts.text },
+        studentSubmissionFiles: [],
+      },
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   async getAttempt(courseId: string, attemptId: string): Promise<BbAttempt> {
     return this.http.json<BbAttempt>({ path: expand('attempt', { courseId, attemptId }) });
   }
