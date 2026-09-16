@@ -250,7 +250,16 @@ export async function extractXsrf(jar: CookieJar, baseUrl: string): Promise<stri
   if (direct) return direct.value;
   const router = cookies.find((c) => c.key === 'BbRouter');
   if (!router) return undefined;
-  const match = /(?:^|,)xsrf:([^,]+)/.exec(decodeURIComponent(router.value));
+  // Some tenants (e.g. KFUPM) emit BbRouter values that contain a raw '%'
+  // character which is not valid percent-encoding, so decodeURIComponent would
+  // throw and abort the whole browser import. Fall back to the raw value.
+  let decoded = router.value;
+  try {
+    decoded = decodeURIComponent(router.value);
+  } catch {
+    /* not percent-encoded; use as-is */
+  }
+  const match = /(?:^|,)xsrf:([^,]+)/.exec(decoded);
   return match?.[1];
 }
 

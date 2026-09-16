@@ -275,6 +275,16 @@ async function chromiumKey(profile: BrowserProfile): Promise<{ v10?: Buffer; gcm
   return { v10 };
 }
 
+/**
+ * KWallet folder that holds a Chromium-family browser's "Safe Storage" key.
+ *
+ * Brave keeps it under `Brave Keys`, Chrome and Chromium under `Chromium Keys`,
+ * derived from the service name (`Brave Safe Storage` -> `Brave Keys`).
+ */
+export function kwalletFolder(service: string): string {
+  return service.replace(/ Safe Storage$/, ' Keys');
+}
+
 async function linuxKeyringPassword(service: string): Promise<string> {
   for (const args of [
     ['lookup', 'application', 'chrome'],
@@ -285,6 +295,16 @@ async function linuxKeyringPassword(service: string): Promise<string> {
       if (stdout.trim()) return stdout.trim();
     } catch {
       /* try the next strategy */
+    }
+  }
+  // KDE desktops keep the same key in KWallet instead of exposing it through
+  // the Secret Service, so `secret-tool` finds nothing. Try KWallet directly.
+  for (const f of [kwalletFolder(service), 'Passwords']) {
+    try {
+      const { stdout } = await run('kwallet-query', ['-r', service, '-f', f, 'kdewallet']);
+      if (stdout.trim()) return stdout.trim();
+    } catch {
+      /* try the next folder */
     }
   }
   // Chromium falls back to this literal when no keyring is available; it is

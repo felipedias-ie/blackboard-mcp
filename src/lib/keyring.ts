@@ -45,7 +45,7 @@ async function readFromOsKeychain(): Promise<Buffer | null> {
     if (platform() === 'linux') {
       const { stdout } = await run('secret-tool', [
         'lookup', 'service', SERVICE, 'account', ACCOUNT,
-      ]);
+      ], { timeout: 5000 });
       const hex = stdout.trim();
       if (hex.length === 64) return Buffer.from(hex, 'hex');
       return null;
@@ -70,7 +70,7 @@ async function writeToOsKeychain(key: Buffer): Promise<boolean> {
       await run('secret-tool', [
         'store', '--label=Blackboard MCP session key',
         'service', SERVICE, 'account', ACCOUNT,
-      ], { input: hex } as never);
+      ], { input: hex, timeout: 5000 } as never);
       log.debug('Stored session key in Secret Service');
       return true;
     }

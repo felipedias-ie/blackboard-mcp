@@ -1,8 +1,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { CookieJar, Cookie } from 'tough-cookie';
 
 import { parseAutoSubmitForm } from '../dist/auth/saml.js';
-import { chromeTimeToMs, toCookieHeader, isInfrastructureHost } from '../dist/auth/browsers.js';
+import { chromeTimeToMs, toCookieHeader, isInfrastructureHost, kwalletFolder } from '../dist/auth/browsers.js';
+import { extractXsrf } from '../dist/auth/session.js';
 import { displayName } from '../dist/client/index.js';
 
 describe('SSO handoff form parsing', () => {
@@ -166,5 +168,55 @@ describe('display name resolution', () => {
     assert.equal(displayName({ id: '_1_1', givenName: 'Ada' }), 'Ada');
     assert.equal(displayName({ id: '_1_1', userName: 'ada@x.edu' }), 'ada@x.edu');
     assert.equal(displayName({ id: '_1_1' }), '_1_1');
+  });
+});
+
+describe('BbRouter xsrf extraction', () => {
+  const bb = 'https://blackboard.example.edu/';
+
+  test('tolerates a raw % in the cookie value', async () => {
+    // Some tenants emit a BbRouter value that is not valid percent-encoding.
+    // decodeURIComponent used to throw and abort the whole browser import.
+    const jar = new CookieJar();
+    await jar.setCookie(
+      new Cookie({
+        key: 'BbRouter',
+        value: 'expires:1,id:2,xsrf:TOKEN%ZZ,signature:3',
+        domain: 'blackboard.example.edu',
+        path: '/',
+        secure: true,
+      }),
+      bb,
+      { ignoreError: true },
+    );
+    assert.equal(await extractXsrf(jar, bb), 'TOKEN%ZZ');
+  });
+
+  test('still decodes a percent-encoded BbRouter value', async () => {
+    const jar = new CookieJar();
+    await jar.setCookie(
+      new Cookie({
+        key: 'BbRouter',
+        value: 'expires:1,id:2,xsrf:AB%2FCD,signature:3',
+        domain: 'blackboard.example.edu',
+        path: '/',
+        secure: true,
+      }),
+      bb,
+      { ignoreError: true },
+    );
+    assert.equal(await extractXsrf(jar, bb), 'AB/CD');
+  });
+});
+
+describe('KWallet key lookup', () => {
+  test('maps a Safe Storage service to its KWallet folder', () => {
+    assert.equal(kwalletFolder('Brave Safe Storage'), 'Brave Keys');
+    assert.equal(kwalletFolder('Chromium Safe Storage'), 'Chromium Keys');
+    assert.equal(kwalletFolder('Chrome Safe Storage'), 'Chrome Keys');
+  });
+
+  test('leaves an unrecognised service name untouched', () => {
+    assert.equal(kwalletFolder('Something Else'), 'Something Else');
   });
 });
