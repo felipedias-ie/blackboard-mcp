@@ -9,7 +9,8 @@ import type {
   BbGradeColumn, BbGrade, BbAttempt, BbAttemptFile, BbAnnouncement,
   BbCalendarItem, BbTodoItem, BbTodoResponse, BbConversation,
   BbConversationMessage, BbForumMessage, BbAttendanceRecord, BbStreamResponse,
-  BbFileDetail, BbGradeSchema,
+  BbFileDetail, BbGradeSchema, BbSubmissionService, BbGradeAttemptRow,
+  BbQuestionAttempt, BbAnswerGrade,
 } from './types.js';
 
 export * from './types.js';
@@ -539,6 +540,57 @@ export class BlackboardClient {
     }
   }
 
+
+  // ── assessments ─────────────────────────────────────────────────────────
+
+  /**
+   * Graded questions for an assessment attempt: the points awarded per
+   * question plus the nested question and the student's answer.
+   *
+   * This is the better of the two answer endpoints. The expand list mirrors
+   * what the Ultra review screen requests, without which `question` comes back
+   * as a bare id.
+   */
+  async listAttemptAnswerGrades(courseId: string, attemptId: string): Promise<BbAnswerGrade[]> {
+    return this.paginate<BbAnswerGrade>(expand('attemptAnswerGrades', { courseId, attemptId }), {
+      limit: 200,
+      query: {
+        expand:
+          'questionAttempt.question,questionAttempt.question.usageCount,questionAttempt.question.sourceInfo,questionAttempt.answerCorrectness',
+      },
+    });
+  }
+
+  /** Raw per-question answers, without the grade wrapper. */
+  async listAttemptAnswers(courseId: string, attemptId: string): Promise<BbQuestionAttempt[]> {
+    return this.paginate<BbQuestionAttempt>(expand('attemptAnswers', { courseId, attemptId }), {
+      limit: 200,
+    });
+  }
+
+  /** Attempt history for one grade. */
+  async listGradeAttempts(
+    courseId: string,
+    columnId: string,
+    gradeId: string,
+  ): Promise<BbGradeAttemptRow[]> {
+    return this.paginate<BbGradeAttemptRow>(
+      expand('gradeAttempts', { courseId, columnId, gradeId }),
+      { limit: 100, query: { fields: 'id,status,attemptDate,exempt,overrideStatus' } },
+    );
+  }
+
+  /**
+   * Submission services on a column, such as originality reporting.
+   * Worth checking before submitting, since it says whether the work will be
+   * run through plagiarism detection.
+   */
+  async getSubmissionServices(courseId: string, columnId: string): Promise<BbSubmissionService[]> {
+    const res = await this.http.json<{ submissionServices?: BbSubmissionService[] }>({
+      path: expand('submissionServices', { courseId, columnId }),
+    });
+    return res?.submissionServices ?? [];
+  }
 
   // ── submission (writes) ─────────────────────────────────────────────────
 

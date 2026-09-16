@@ -317,6 +317,7 @@ Every course tool takes a `courseId`, an internal id like `_12345_1` rather than
 | `bb_list_grades` | Grades for one course or all |
 | `bb_get_grade_detail` | Score, letter grade, attempts, submissions, instructor feedback |
 | `bb_grade_summary` | Per-course standing and averages |
+| `bb_review_quiz_attempt` | Read a quiz back question by question, with your answers and scores |
 
 ### Deadlines
 | Tool | Purpose |

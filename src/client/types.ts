@@ -527,3 +527,101 @@ export interface BbAttemptReceipt {
   lateSubmission?: boolean;
   [k: string]: unknown;
 }
+
+// ── assessments and submission services ───────────────────────────────────
+
+/**
+ * A submission service attached to a gradebook column, such as originality
+ * reporting. Shape confirmed against a live tenant.
+ */
+export interface BbSubmissionService {
+  uniqueHandle?: string;
+  displayName?: string;
+  available?: boolean;
+  capabilities?: {
+    OriginalityReport?: { enabled?: boolean; default?: boolean };
+    [k: string]: unknown;
+  };
+}
+
+/** Compact attempt row from the per-grade attempt history. */
+export interface BbGradeAttemptRow {
+  id?: string;
+  status?: string;
+  attemptDate?: string;
+  exempt?: boolean;
+  overrideStatus?: string;
+}
+
+/**
+ * One answer option offered by a question.
+ */
+export interface BbAnswerOption {
+  id?: string;
+  answerText?: BbText;
+  positionLocked?: boolean;
+}
+
+/**
+ * A question inside an assessment. Shape verified against a completed
+ * 25-question attempt on a live tenant.
+ */
+export interface BbAssessmentQuestion {
+  id?: string;
+  /** e.g. "multipleanswer", "multiplechoice", "essay", "truefalse". */
+  questionType?: string;
+  questionText?: BbText;
+  title?: string | null;
+  points?: number;
+  position?: number;
+  answers?: BbAnswerOption[];
+  answersCount?: number;
+  singleCorrectAnswer?: boolean;
+  answerSelectionLimit?: number;
+  allowPartialCredit?: boolean;
+  extraCredit?: boolean;
+  isAutoGraded?: boolean;
+  showAnswersInRandomOrder?: boolean;
+  correctResponseFeedback?: BbText;
+  incorrectResponseFeedback?: BbText;
+  instructorNotes?: BbText;
+  /** Present only when requested via expand. */
+  sourceInfo?: { id?: string; name?: string; type?: string };
+  usageCount?: number;
+}
+
+/**
+ * The student's attempt at one question.
+ *
+ * `givenAnswer` is deliberately `unknown`: its type depends on the question
+ * type. A `multipleanswer` question returns an array of booleans aligned by
+ * index with `question.answers`, whereas free text returns a string.
+ *
+ * The `is*Visible` flags are what the tenant permits the student to see after
+ * submitting. They must be honoured rather than assumed true: a course can post
+ * scores while withholding which answers were correct.
+ */
+export interface BbQuestionAttempt {
+  id?: string;
+  attemptId?: string;
+  questionId?: string;
+  questionType?: string;
+  attemptStatus?: string;
+  givenAnswer?: unknown;
+  order?: unknown[];
+  lookupOrder?: unknown[];
+  question?: BbAssessmentQuestion;
+  visibleQuestionNumber?: number;
+  isFeedbackVisible?: boolean;
+  isCorrectAnswersVisible?: boolean;
+  isScoreVisible?: boolean;
+  isResultVisible?: boolean;
+  saveTimes?: Array<{ date?: string; blankResponseSaved?: boolean }>;
+  permissions?: { editGrades?: boolean; editGivenAnswers?: boolean };
+}
+
+/** A graded question: the points awarded, plus the attempt it grades. */
+export interface BbAnswerGrade {
+  points?: number;
+  questionAttempt?: BbQuestionAttempt;
+}

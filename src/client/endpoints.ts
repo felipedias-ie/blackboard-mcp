@@ -86,6 +86,34 @@ export const DEFAULT_ENDPOINTS = {
   columnAttempts: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/attempts',
   /** Per-student due-date exceptions. POST with `{membershipIds:[...]}` reads them. */
   columnExceptions: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/exceptions',
+  /**
+   * Attempt history for one grade. Accepts a `fields` parameter, which is how
+   * the Ultra UI keeps this cheap.
+   */
+  gradeAttempts:
+    '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/grades/{gradeId}/attempts',
+  /**
+   * Submission services configured on a column, such as originality reporting
+   * (SafeAssign). Worth checking before submitting, since it tells you whether
+   * the work will be run through plagiarism detection.
+   */
+  submissionServices:
+    '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/submissionServices',
+  /**
+   * Per-question answers for an assessment attempt, and their grades.
+   *
+   * Verified against a completed 25-question attempt. Prefer
+   * `attemptAnswerGrades`, which carries the awarded points per question and
+   * the nested question in one call.
+   */
+  attemptAnswers: '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}/assessment/answers',
+  attemptAnswerGrades:
+    '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}/assessment/answers/grades',
+  /** Proctoring services available on the instance. */
+  proctoringServices: '/learn/api/public/v1/proctoring/services',
+  /** Returned an empty object on every capture available; shape unknown. */
+  submissionResults:
+    '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}/submissionResults',
   attemptFiles:
     '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/attempts/{attemptId}/files',
   attemptFileDownload:

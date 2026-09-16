@@ -327,13 +327,57 @@ export function registerGradeTools(server: McpServer): void {
         }
       }
 
+      // Originality reporting changes what submitting means, so surface it
+      // here rather than making the user guess.
+      let services = '';
+      try {
+        const svc = await client.getSubmissionServices(courseId, columnId);
+        if (svc.length > 0) {
+          services = table(
+            svc.map((v) => ({
+              service: v.displayName ?? v.uniqueHandle,
+              available: v.available === false ? 'no' : 'yes',
+              originalityReport:
+                v.capabilities?.OriginalityReport?.enabled === true ? 'enabled' : undefined,
+            })),
+          );
+        }
+      } catch {
+        /* not configured on this column */
+      }
+
+      // Full attempt history, which the grade record alone does not give.
+      let history = '';
+      if (grade?.id) {
+        try {
+          const rows = await client.listGradeAttempts(courseId, columnId, grade.id);
+          if (rows.length > 0) {
+            history = table(
+              rows.map((r) => ({
+                attemptId: r.id,
+                status: r.status,
+                submitted: when(r.attemptDate),
+                exempt: r.exempt ? 'yes' : undefined,
+              })),
+            );
+          }
+        } catch {
+          /* history unavailable */
+        }
+      }
+
       return text(
         [
           `# ${columnName(column)}`,
           '',
           head,
           section('Instructions', clip(description, 3000)),
+          section('Submission services', services),
+          section('Attempt history', history),
           section('Attempts', attemptsBody),
+          attemptsBody || history
+            ? '\n_If this is a quiz, `bb_review_quiz_attempt` reads it back question by question._'
+            : '',
         ].join('\n'),
       );
     }),
@@ -527,6 +571,150 @@ export function registerGradeTools(server: McpServer): void {
           submitted
             ? `Keep the receipt id as proof of submission. Verify independently with \`bb_get_grade_detail\` for columnId ${args.columnId}.`
             : 'No receipt came back, so treat this as unconfirmed and check in Blackboard directly.',
+        ].join('\n'),
+      );
+    }),
+  );
+  server.registerTool(
+    'bb_review_quiz_attempt',
+    {
+      title: 'Review a quiz or test attempt',
+      description:
+        'Reads back a completed assessment attempt question by question: the question text, the options, which the student chose, the points awarded, and the correct answer plus feedback where the course permits it. Ideal for revising from a past quiz. Get the attemptId from bb_get_grade_detail. Output is windowed, so page with fromQuestion on long tests.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        attemptId: z.string().describe('Attempt id, from bb_get_grade_detail.'),
+        fromQuestion: z.number().int().min(1).optional().describe('First question to show. Default 1.'),
+        maxQuestions: z.number().int().min(1).max(50).optional().describe('Questions per call. Default 10.'),
+        includeText: z
+          .boolean()
+          .optional()
+          .describe('Include full question and option text. Default true. Set false for a score-only summary.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    guard('bb_review_quiz_attempt', async (args) => {
+      const client = await getClient();
+      const graded = await client.listAttemptAnswerGrades(args.courseId, args.attemptId);
+
+      if (graded.length === 0) {
+        return text(
+          [
+            'No per-question data for this attempt.',
+            '',
+            'That is expected when the assignment is a file or text submission rather than a quiz, or when the course has not released results. `bb_get_grade_detail` shows the overall grade either way.',
+          ].join('\n'),
+        );
+      }
+
+      // Order by the number the student saw, falling back to stored position.
+      const rows = [...graded].sort((a, b) => {
+        const an = a.questionAttempt?.visibleQuestionNumber ?? a.questionAttempt?.question?.position ?? 0;
+        const bn = b.questionAttempt?.visibleQuestionNumber ?? b.questionAttempt?.question?.position ?? 0;
+        return an - bn;
+      });
+
+      const from = args.fromQuestion ?? 1;
+      const take = args.maxQuestions ?? 10;
+      const window = rows.slice(from - 1, from - 1 + take);
+      const showText = args.includeText !== false;
+
+      let earned = 0;
+      let possible = 0;
+      for (const r of rows) {
+        earned += r.points ?? 0;
+        possible += r.questionAttempt?.question?.points ?? 0;
+      }
+
+      // The tenant decides what a student may see after submitting. Honour it
+      // rather than implying the data is missing.
+      const first = rows[0]?.questionAttempt;
+      const scoresHidden = first?.isScoreVisible === false;
+      const answersHidden = first?.isCorrectAnswersVisible === false;
+
+      let truncated = false;
+      const keep = (v: string | undefined, max: number): string => {
+        const t = htmlToText(v ?? '');
+        if (t.length > max) truncated = true;
+        return clip(t, max);
+      };
+
+      const blocks = window.map((r, i) => {
+        const qa = r.questionAttempt;
+        const q = qa?.question;
+        const n = qa?.visibleQuestionNumber ?? from + i;
+        const given = qa?.givenAnswer;
+
+        // A multipleanswer question returns booleans aligned with the options.
+        let chosen = '';
+        if (Array.isArray(given) && q?.answers?.length) {
+          const picked = q.answers
+            .filter((_, idx) => given[idx] === true)
+            .map((a) => keep(a.answerText?.displayText ?? a.answerText?.rawText, 400));
+          chosen = picked.length ? picked.join('; ') : '(nothing selected)';
+        } else if (typeof given === 'string') {
+          chosen = clip(htmlToText(given), 2000);
+        } else if (given != null) {
+          chosen = clip(JSON.stringify(given), 120);
+        } else {
+          chosen = '(no answer recorded)';
+        }
+
+        const head = table([
+          { field: 'type', value: q?.questionType },
+          { field: 'score', value: scoresHidden ? 'hidden by the course' : `${r.points ?? 0} / ${q?.points ?? '?'}` },
+          { field: 'status', value: qa?.attemptStatus },
+          { field: 'auto-graded', value: q?.isAutoGraded === false ? 'no' : undefined },
+        ]);
+
+        const parts = [`### Question ${n}`, '', head];
+
+        if (showText && q?.questionText) {
+          parts.push('', keep(q.questionText.displayText ?? q.questionText.rawText, 4000));
+        }
+        if (showText && q?.answers?.length) {
+          parts.push(
+            '',
+            table(
+              q.answers.map((a, idx) => ({
+                option: idx + 1,
+                text: keep(a.answerText?.displayText ?? a.answerText?.rawText, 400),
+                chose: Array.isArray(given) && given[idx] === true ? 'yes' : '',
+              })),
+            ),
+          );
+        }
+        parts.push('', `**Your answer:** ${chosen}`);
+
+        const fb = qa?.isFeedbackVisible === false
+          ? undefined
+          : (r.points ?? 0) >= (q?.points ?? 0)
+            ? q?.correctResponseFeedback
+            : q?.incorrectResponseFeedback;
+        const fbText = fb ? htmlToText(fb.displayText ?? fb.rawText ?? '') : '';
+        if (fbText) parts.push('', `**Feedback:** ${clip(fbText, 2000)}`);
+
+        return parts.join('\n');
+      });
+
+      const last = Math.min(from + window.length - 1, rows.length);
+      const notes: string[] = [];
+      if (scoresHidden) notes.push('This course has not released per-question scores.');
+      if (answersHidden) notes.push('This course does not reveal which answers were correct, so only your own responses are shown.');
+      if (last < rows.length) notes.push(`Showing questions ${from}-${last} of ${rows.length}. Call again with fromQuestion=${last + 1}.`);
+      if (truncated) notes.push('Some text was long enough to be shortened; reduce maxQuestions to see more of each question.');
+
+      return text(
+        [
+          `# Quiz attempt ${args.attemptId}`,
+          '',
+          table([
+            { field: 'questions', value: rows.length },
+            { field: 'total', value: scoresHidden ? 'hidden' : `${earned} / ${possible}` },
+            { field: 'percent', value: scoresHidden || !possible ? undefined : `${Math.round((earned / possible) * 100)}%` },
+          ]),
+          notes.length ? `\n> ${notes.join(' ')}\n` : '',
+          blocks.join('\n\n---\n\n'),
         ].join('\n'),
       );
     }),

@@ -1,6 +1,6 @@
 {
   "name": "blackboard-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for Blackboard Learn (Ultra). Read your courses, content, files, grades, deadlines and announcements using your own browser session.",
   "keywords": [
     "blackboard",

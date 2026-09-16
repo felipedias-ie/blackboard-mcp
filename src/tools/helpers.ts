@@ -71,6 +71,18 @@ export function resetClient(): void {
  * dropped, so a tenant that does not populate a field does not pay for it.
  */
 export function table(rows: Array<Record<string, string | number | undefined>>): string {
+  // Many tools render a two-column {field, value} list. An absent value should
+  // drop the whole row, not leave a blank one, so these read as facts rather
+  // than as a form with gaps.
+  const isFieldValue =
+    rows.length > 0 &&
+    rows.every((r) => {
+      const keys = Object.keys(r);
+      return keys.length === 2 && keys[0] === 'field' && keys[1] === 'value';
+    });
+  if (isFieldValue) {
+    rows = rows.filter((r) => r.value !== undefined && r.value !== '' && r.value !== null);
+  }
   if (rows.length === 0) return '_No results._';
   const keys = Object.keys(rows[0]!).filter((k) =>
     rows.some((r) => r[k] !== undefined && r[k] !== ''),
