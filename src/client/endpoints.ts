@@ -177,6 +177,30 @@ export const DEFAULT_ENDPOINTS = {
   forumCounts:
     '/learn/api/v1/courses/{courseId}/discussionboards/default/forums/{forumId}/counts',
 
+  /** DELETE clears the "new grade" badge on a grade. */
+  unreadGradeIndicator:
+    '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/grades/{gradeId}/unreadGradeIndicator',
+  /** DELETE dismisses one course notification. */
+  courseNotification: '/learn/api/v1/courses/{courseId}/notifications/{notificationId}',
+  /** PATCH marks a conversation message read, or edits it. */
+  conversationMessage:
+    '/learn/api/v1/courses/{courseId}/conversations/{conversationId}/messages/{messageId}',
+  /** Per-user read/post counts for a discussion forum. */
+  forumUserCounts:
+    '/learn/api/v1/courses/{courseId}/discussionboards/default/forums/{forumId}/usercounts',
+  /** Whether a forum permits anonymous posting. */
+  forumAnonymous:
+    '/learn/api/v1/courses/{courseId}/discussionboards/default/forums/{forumId}/anonymous',
+  /** One calendar entry by id. The type segment is a literal Java class name. */
+  calendarEntry:
+    '/learn/api/v1/courses/{courseId}/calendars/calendarItems/blackboard.data.calendar.CalendarEntry/{entryId}',
+  /** Connected cloud storage providers (OneDrive, Drive). */
+  cloudStorages: '/learn/api/v1/cloudstorages',
+  /** Whether video capture is enabled on the instance. */
+  videoIntegration: '/learn/api/v1/video-integration/availability',
+  /** PUT updates the signed-in user's own profile. */
+  updateUser: '/learn/api/v1/users',
+
   // ── attendance ──────────────────────────────────────────────────────────
   attendanceRecords: '/learn/api/v1/courses/{courseId}/attendanceRecords',
   attendanceGradebook: '/learn/api/v1/courses/{courseId}/attendance/gradebook',

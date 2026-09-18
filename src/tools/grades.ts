@@ -6,6 +6,7 @@ import {
 } from '../client/index.js';
 import { htmlToText } from '../lib/extract.js';
 import { BlackboardError } from '../lib/errors.js';
+import { encodeAnswer, describeOptions, type LooseAnswer } from '../lib/answers.js';
 import { fmtBytes } from '../lib/files.js';
 
 /** Best display string for a grade cell, across the several shapes it takes. */
@@ -826,6 +827,148 @@ export function registerGradeTools(server: McpServer): void {
           submitted
             ? 'Keep the receipt id as proof. Timestamps are UTC.'
             : 'No receipt came back, so treat this as unconfirmed and check in Blackboard directly.',
+        ].join('\n'),
+      );
+    }),
+  );
+  server.registerTool(
+    'bb_start_quiz_attempt',
+    {
+      title: 'Start a quiz attempt',
+      description:
+        'Opens an IN_PROGRESS attempt on an assessment and lists its questions with their options and numbering. Returns the same attempt if one is already open, so it is safe to call more than once. Starting an attempt may consume one of a limited number and can start a timer; check bb_get_content for the assessment settings first. Requires writes to be enabled.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        columnId: z.string().describe('Gradebook column id of the assessment.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    guard('bb_start_quiz_attempt', async ({ courseId, columnId }) => {
+      const client = await getClient();
+      assertWritesEnabled(client.config.allowWrites);
+
+      const column = await client.getGradeColumn(courseId, columnId);
+      const attempt = await client.createDraftAttempt(courseId, columnId);
+      const answers = await client.listAttemptAnswers(courseId, attempt.id).catch(() => []);
+
+      const rows = answers
+        .sort(
+          (a, b) =>
+            (a.visibleQuestionNumber ?? a.question?.position ?? 0) -
+            (b.visibleQuestionNumber ?? b.question?.position ?? 0),
+        )
+        .map((a, i) => ({
+          question: a.visibleQuestionNumber ?? i + 1,
+          answerId: a.id,
+          type: a.questionType ?? a.question?.questionType,
+          points: a.question?.points,
+          options: a.question?.answers?.length || undefined,
+          answered: a.givenAnswer === undefined || a.givenAnswer === null ? '' : 'yes',
+        }));
+
+      return text(
+        [
+          `# ${columnName(column)}`,
+          '',
+          table([
+            { field: 'attemptId', value: attempt.id },
+            { field: 'status', value: attempt.status },
+            { field: 'questions', value: rows.length || undefined },
+            { field: 'points possible', value: column.possible },
+            { field: 'attempts allowed', value: column.multipleAttempts || 'unlimited' },
+          ]),
+          '',
+          rows.length ? table(rows) : '_No question records returned; this may not be an assessment._',
+          '',
+          '_Answer with `bb_save_quiz_answer`, then submit with `bb_submit_quiz_attempt`._',
+        ].join('\n'),
+      );
+    }),
+  );
+
+  server.registerTool(
+    'bb_save_quiz_answer',
+    {
+      title: 'Save an answer to a quiz question',
+      description:
+        'Writes an answer onto one question of an IN_PROGRESS attempt. Saving is not submitting: answers can be overwritten until the attempt is submitted. Accepts natural input and resolves it against the question, so option numbers (1-based), option text, booleans for true/false, plain text for essays, or numbers for numeric questions all work. Echoes back how the input was interpreted so it can be verified before submitting. Requires writes to be enabled.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        attemptId: z.string().describe('The IN_PROGRESS attempt, from bb_start_quiz_attempt.'),
+        question: z
+          .union([z.number().int().min(1), z.string()])
+          .describe('Question number as shown to the student, or the answerId directly.'),
+        answer: z
+          .union([
+            z.string(),
+            z.number(),
+            z.boolean(),
+            z.array(z.union([z.string(), z.number(), z.boolean()])),
+          ])
+          .describe(
+            'The answer. Choice questions take option numbers or text (an array selects several); true/false takes a boolean; essays take text; numeric takes a number.',
+          ),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    guard('bb_save_quiz_answer', async (args) => {
+      const client = await getClient();
+      assertWritesEnabled(client.config.allowWrites);
+
+      const answers = await client.listAttemptAnswers(args.courseId, args.attemptId);
+      if (answers.length === 0) {
+        throw new BlackboardError('NOT_FOUND', 'This attempt has no question records.', {
+          hint: 'Start the attempt with bb_start_quiz_attempt, and check that it is still IN_PROGRESS.',
+        });
+      }
+
+      const sorted = [...answers].sort(
+        (a, b) =>
+          (a.visibleQuestionNumber ?? a.question?.position ?? 0) -
+          (b.visibleQuestionNumber ?? b.question?.position ?? 0),
+      );
+
+      const target =
+        typeof args.question === 'string'
+          ? sorted.find((a) => a.id === args.question)
+          : (sorted.find((a) => a.visibleQuestionNumber === args.question) ??
+            sorted[args.question - 1]);
+
+      if (!target?.id) {
+        throw new BlackboardError('NOT_FOUND', `No question ${args.question} on this attempt.`, {
+          hint: `This attempt has ${sorted.length} question(s), numbered 1 to ${sorted.length}.`,
+        });
+      }
+
+      const encoded = encodeAnswer(target, args.answer as LooseAnswer);
+      const saved = await client.saveQuizAnswer(args.courseId, args.attemptId, target.id, {
+        questionType: target.questionType ?? target.question?.questionType ?? 'multipleanswer',
+        givenAnswer: encoded.givenAnswer,
+      });
+
+      const q = target.question;
+      const remaining = sorted.filter(
+        (a) => a.id !== target.id && (a.givenAnswer === undefined || a.givenAnswer === null),
+      ).length;
+
+      return text(
+        [
+          `Saved answer to question ${target.visibleQuestionNumber ?? args.question}.`,
+          '',
+          table([
+            { field: 'answerId', value: target.id },
+            { field: 'type', value: target.questionType ?? q?.questionType },
+            { field: 'interpreted as', value: encoded.interpretation },
+            { field: 'attempt status', value: saved.attemptStatus ?? target.attemptStatus },
+            { field: 'points', value: q?.points },
+            { field: 'still unanswered', value: remaining || undefined },
+          ]),
+          encoded.passthrough
+            ? '\n> The question type was not recognised, so the value was sent unchanged. Verify it with `bb_review_quiz_attempt`.'
+            : '',
+          q?.answers?.length ? `\n**Options**\n\n${describeOptions(q)}` : '',
+          '',
+          '_Not submitted. Answers can be overwritten until you call `bb_submit_quiz_attempt`._',
         ].join('\n'),
       );
     }),

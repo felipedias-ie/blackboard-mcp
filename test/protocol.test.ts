@@ -200,15 +200,19 @@ test('the submission tool is declared as destructive and demands confirmation', 
   assert.match(quiz.description ?? '', /[Ii]rreversible/);
 
   // No write tool may claim to be read-only.
-  for (const name of ['bb_submit_assignment', 'bb_submit_quiz_attempt', 'bb_save_draft', 'bb_mark_reviewed']) {
+  for (const name of [
+    'bb_submit_assignment', 'bb_submit_quiz_attempt', 'bb_save_draft',
+    'bb_mark_reviewed', 'bb_save_quiz_answer', 'bb_start_quiz_attempt',
+  ]) {
     const t = tools.find((x) => x.name === name);
     assert.equal(t?.annotations?.readOnlyHint, false, `${name} must not be readOnly`);
   }
 
-  // And nothing that answers quiz questions may be exposed as a tool.
-  assert.equal(
-    tools.find((t) => /answer_quiz|save_quiz_answer|bb_answer/.test(t.name)),
-    undefined,
-    'answering quiz questions must not be an agent-facing tool',
-  );
+  // Answer writing is a supported write. It is not destructive, because an
+  // answer can be overwritten until the attempt is submitted, but it must not
+  // claim to be read-only either.
+  const answer = tools.find((t) => t.name === 'bb_save_quiz_answer');
+  assert.ok(answer, 'bb_save_quiz_answer should be registered');
+  assert.equal(answer.annotations?.readOnlyHint, false);
+  assert.equal(answer.annotations?.destructiveHint, false);
 });

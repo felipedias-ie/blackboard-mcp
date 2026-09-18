@@ -541,6 +541,67 @@ export class BlackboardClient {
   }
 
 
+
+  // ── notifications and read state ────────────────────────────────────────
+
+  /** Clears the "new grade" badge on a grade. */
+  async markGradeSeen(courseId: string, columnId: string, gradeId: string): Promise<void> {
+    await this.http.request({
+      method: 'DELETE',
+      path: expand('unreadGradeIndicator', { courseId, columnId, gradeId }),
+      allowNotFound: true,
+    });
+  }
+
+  /** Dismisses one course notification. */
+  async dismissNotification(courseId: string, notificationId: string): Promise<void> {
+    await this.http.request({
+      method: 'DELETE',
+      path: expand('courseNotification', { courseId, notificationId }),
+      allowNotFound: true,
+    });
+  }
+
+  /** Marks a conversation message read. */
+  async markMessageRead(
+    courseId: string,
+    conversationId: string,
+    messageId: string,
+    read = true,
+  ): Promise<unknown> {
+    return this.http.json({
+      method: 'PATCH',
+      path: expand('conversationMessage', { courseId, conversationId, messageId }),
+      body: { isRead: read },
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+    });
+  }
+
+  /** Per-user read and post counts for a forum. */
+  async getForumUserCounts(courseId: string, forumId: string): Promise<unknown> {
+    return this.http.json({ path: expand('forumUserCounts', { courseId, forumId }) });
+  }
+
+  /** Whether a forum permits anonymous posting. */
+  async getForumAnonymity(courseId: string, forumId: string): Promise<unknown> {
+    return this.http.json({ path: expand('forumAnonymous', { courseId, forumId }) });
+  }
+
+  /** One calendar entry by id. */
+  async getCalendarEntry(courseId: string, entryId: string): Promise<BbCalendarItem> {
+    return this.http.json<BbCalendarItem>({ path: expand('calendarEntry', { courseId, entryId }) });
+  }
+
+  /** Cloud storage providers connected to the account. */
+  async listCloudStorages(): Promise<unknown> {
+    return this.http.json({ path: expand('cloudStorages') });
+  }
+
+  /** Whether video capture is available on the instance. */
+  async getVideoIntegration(): Promise<unknown> {
+    return this.http.json({ path: expand('videoIntegration') });
+  }
+
   // ── assessments ─────────────────────────────────────────────────────────
 
   /**
@@ -561,8 +622,32 @@ export class BlackboardClient {
     });
   }
 
-  /** Raw per-question answers, without the grade wrapper. */
+  /**
+   * Per-question records for an attempt, including each question and its
+   * options.
+   *
+   * Reads the attempt with `expand=toolAttemptDetail`, because that is the only
+   * request that returns the questions themselves. The dedicated
+   * `assessment/answers` endpoint returns bare answer records with no
+   * `question` and no `questionType`, and no `expand` value changes that, so
+   * resolving "option 3" against a question is impossible from it. It is kept
+   * as a fallback for tenants shaped differently.
+   */
   async listAttemptAnswers(courseId: string, attemptId: string): Promise<BbQuestionAttempt[]> {
+    try {
+      const attempt = await this.http.json<BbAttempt>({
+        path: expand('attempt', { courseId, attemptId }),
+        query: { expand: 'toolAttemptDetail' },
+      });
+      const detail = attempt?.toolAttemptDetail ?? {};
+      for (const value of Object.values(detail)) {
+        const qa = (value as { questionAttempts?: BbQuestionAttempt[] })?.questionAttempts;
+        if (Array.isArray(qa) && qa.length > 0) return qa;
+      }
+    } catch (err) {
+      log.debug('toolAttemptDetail read failed; falling back', (err as Error).message);
+    }
+
     return this.paginate<BbQuestionAttempt>(expand('attemptAnswers', { courseId, attemptId }), {
       limit: 200,
     });

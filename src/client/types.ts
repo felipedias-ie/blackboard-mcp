@@ -331,6 +331,15 @@ export interface BbAttempt {
   attemptFirstGradedDate?: string;
   attemptLastGradedDate?: string;
   attemptReceipt?: BbAttemptReceipt;
+  /**
+   * Tool-specific payload, keyed by score provider handle. For an assessment
+   * this is where the questions live, under `questionAttempts`, and it is
+   * returned only when requested with `expand=toolAttemptDetail`.
+   */
+  toolAttemptDetail?: Record<
+    string,
+    { questionAttempts?: BbQuestionAttempt[]; assessment?: unknown; possiblePoints?: number; [k: string]: unknown }
+  >;
   permissions?: Record<string, boolean>;
 }
 

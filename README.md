@@ -351,6 +351,8 @@ Off unless `BLACKBOARD_MCP_ALLOW_WRITES=1` is set.
 
 | Tool | Purpose |
 |---|---|
+| `bb_start_quiz_attempt` | Open an attempt on an assessment and list its questions |
+| `bb_save_quiz_answer` | Answer one question. Overwritable until submitted |
 | `bb_save_draft` | Save text as a draft, not visible to the instructor, reversible |
 | `bb_submit_assignment` | Submit text for grading. Irreversible, requires `confirm: true` |
 | `bb_submit_quiz_attempt` | Submit an in-progress quiz. Irreversible, requires `confirm: true` |
@@ -361,7 +363,9 @@ Both submit tools have three gates: writes must be enabled, `confirm` must be `t
 
 Assignment submission is text only, since the file upload flow is not implemented.
 
-**Answering quiz questions is not an available tool.** The endpoint is mapped and `saveQuizAnswer()` exists in the client for anyone scripting deliberately, but it is not exposed to an agent: a model that can read the questions and write the answers is an exam-taking loop, not a data-access one.
+`bb_save_quiz_answer` resolves loose input against the question, so option numbers, option text, booleans for true/false, plain text for essays and numbers for numeric questions all work, and it echoes back how the input was read so you can check it before submitting. Answers are overwritable until the attempt is submitted.
+
+Blackboard strips a question from a submitted attempt when the course hides results, so option resolution works only while an attempt is `IN_PROGRESS`. On a completed attempt, pass the raw `givenAnswer` instead.
 
 The Ultra API is larger than what's wrapped here. `bb_raw_request` is the answer when the tool you need doesn't exist.
 
