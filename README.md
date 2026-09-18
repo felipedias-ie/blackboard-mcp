@@ -352,9 +352,16 @@ Off unless `BLACKBOARD_MCP_ALLOW_WRITES=1` is set.
 | Tool | Purpose |
 |---|---|
 | `bb_save_draft` | Save text as a draft, not visible to the instructor, reversible |
-| `bb_submit_assignment` | Submit for grading. Irreversible, and requires `confirm: true` |
+| `bb_submit_assignment` | Submit text for grading. Irreversible, requires `confirm: true` |
+| `bb_submit_quiz_attempt` | Submit an in-progress quiz. Irreversible, requires `confirm: true` |
 
-`bb_submit_assignment` has three gates: writes must be enabled, `confirm` must be `true`, and it refuses when an attempt already exists unless you pass `allowResubmit`. It returns Blackboard's receipt id, which is your proof of submission, and flags a late submission. Text only, since the file upload flow is not implemented.
+Both submit tools have three gates: writes must be enabled, `confirm` must be `true`, and an existing or already-submitted attempt is refused. Each returns Blackboard's receipt id, which is your proof of submission, and flags a late submission.
+
+`bb_submit_quiz_attempt` only changes an attempt's status; answers must already be saved on it. An auto-graded test is scored the moment it is submitted, so there is no undo. Inspect the attempt with `bb_review_quiz_attempt` and get the user's explicit go-ahead first.
+
+Assignment submission is text only, since the file upload flow is not implemented.
+
+**Answering quiz questions is not an available tool.** The endpoint is mapped and `saveQuizAnswer()` exists in the client for anyone scripting deliberately, but it is not exposed to an agent: a model that can read the questions and write the answers is an exam-taking loop, not a data-access one.
 
 The Ultra API is larger than what's wrapped here. `bb_raw_request` is the answer when the tool you need doesn't exist.
 

@@ -186,4 +186,29 @@ test('the submission tool is declared as destructive and demands confirmation', 
   const draft = tools.find((t) => t.name === 'bb_save_draft');
   assert.ok(draft, 'bb_save_draft should be registered');
   assert.equal(draft.annotations?.destructiveHint, false);
+
+  // Quiz submission is the highest-stakes write in the package: an auto-graded
+  // test scores on submit, so it carries the same gates.
+  const quiz = tools.find((t) => t.name === 'bb_submit_quiz_attempt');
+  assert.ok(quiz, 'bb_submit_quiz_attempt should be registered');
+  assert.equal(quiz.annotations?.destructiveHint, true);
+  assert.equal(quiz.annotations?.idempotentHint, false);
+  assert.ok(
+    quiz.inputSchema?.required?.includes('confirm'),
+    'confirm must be required on quiz submission',
+  );
+  assert.match(quiz.description ?? '', /[Ii]rreversible/);
+
+  // No write tool may claim to be read-only.
+  for (const name of ['bb_submit_assignment', 'bb_submit_quiz_attempt', 'bb_save_draft', 'bb_mark_reviewed']) {
+    const t = tools.find((x) => x.name === name);
+    assert.equal(t?.annotations?.readOnlyHint, false, `${name} must not be readOnly`);
+  }
+
+  // And nothing that answers quiz questions may be exposed as a tool.
+  assert.equal(
+    tools.find((t) => /answer_quiz|save_quiz_answer|bb_answer/.test(t.name)),
+    undefined,
+    'answering quiz questions must not be an agent-facing tool',
+  );
 });

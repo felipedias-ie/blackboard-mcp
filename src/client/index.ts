@@ -759,12 +759,77 @@ export class BlackboardClient {
     });
   }
 
+
+  /**
+   * Submits an assessment attempt whose answers were already saved per
+   * question.
+   *
+   * Distinct from `writeAttempt` because the contract differs: the query is
+   * `autoSubmitted=false` rather than `saveBeforeSubmitAndPost=true`, and
+   * `studentSubmission` is explicitly `null`, since the work lives in the
+   * per-question answer records rather than in a text body.
+   *
+   * An auto-graded assessment comes back as `COMPLETED` with a score already
+   * populated, so this is irreversible and immediately consequential.
+   */
+  async submitAssessmentAttempt(
+    courseId: string,
+    attemptId: string,
+    opts: { scoreProviderHandle?: string } = {},
+  ): Promise<BbAttempt> {
+    const handle = opts.scoreProviderHandle ?? 'resource/x-bb-assessment';
+    return this.http.json<BbAttempt>({
+      method: 'PATCH',
+      path: expand('attempt', { courseId, attemptId }),
+      query: { autoSubmitted: false, expand: 'attemptReceipt.lateSubmission' },
+      body: {
+        toolAttemptDetail: { [handle]: { type: 'Test' } },
+        status: 'NEEDS_GRADING',
+        studentSubmission: null,
+      },
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+    });
+  }
+
   async getAttempt(courseId: string, attemptId: string): Promise<BbAttempt> {
     return this.http.json<BbAttempt>({ path: expand('attempt', { courseId, attemptId }) });
   }
 
-  async listColumnAttempts(courseId: string, columnId: string, opts: ListOptions = {}): Promise<BbAttempt[]> {
-    return this.paginate<BbAttempt>(expand('columnAttempts', { courseId, columnId }), opts);
+  /**
+   * Attempts on a gradebook column for one grade record.
+   *
+   * Two things make this endpoint easy to get wrong, and getting it wrong means
+   * reporting submitted work as missing:
+   *
+   *  1. It needs `gradeId`. Without it the response carries no attempts at all.
+   *  2. It does not use the usual `results` envelope. Attempts arrive under
+   *     `lookup[gradeId]`, with no `paging`, so a generic paginator sees an
+   *     empty body and yields `[]`.
+   *
+   * `gradeId` is resolved from the grade record when not supplied.
+   */
+  async listColumnAttempts(
+    courseId: string,
+    columnId: string,
+    opts: ListOptions & { gradeId?: string; userId?: string } = {},
+  ): Promise<BbAttempt[]> {
+    let gradeId = opts.gradeId;
+    if (!gradeId) {
+      const grades = await this.getColumnGrades(courseId, columnId, opts.userId).catch(() => []);
+      gradeId = grades[0]?.id;
+    }
+    if (!gradeId) return [];
+
+    const res = await this.http.json<{
+      lookup?: Record<string, BbAttempt[]>;
+      results?: BbAttempt[];
+    }>({
+      path: expand('columnAttempts', { courseId, columnId }),
+      query: { gradeId },
+    });
+
+    // Prefer the lookup bucket; fall back to `results` for tenants that use it.
+    return res?.lookup?.[gradeId] ?? res?.results ?? [];
   }
 
   /** Files submitted with an attempt. */

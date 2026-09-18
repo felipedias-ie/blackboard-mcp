@@ -760,4 +760,74 @@ export function registerGradeTools(server: McpServer): void {
       );
     }),
   );
+  server.registerTool(
+    'bb_submit_quiz_attempt',
+    {
+      title: 'Submit a quiz or test attempt',
+      description:
+        'SUBMITS an in-progress assessment attempt for grading. Irreversible, immediately visible to the instructor, and an auto-graded test is scored on the spot, so a wrong call cannot be walked back. Requires writes to be enabled AND confirm: true. Answers must already be saved on the attempt; this only changes its status. Always show the user the attempt and its answers (bb_review_quiz_attempt) and get their explicit go-ahead before calling this.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        attemptId: z
+          .string()
+          .describe('The IN_PROGRESS attempt to submit. Verify it with bb_review_quiz_attempt first.'),
+        confirm: z
+          .boolean()
+          .describe('Must be true. Set this only when the user has explicitly approved submitting this specific attempt.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    guard('bb_submit_quiz_attempt', async (args) => {
+      const client = await getClient();
+      assertWritesEnabled(client.config.allowWrites);
+
+      if (args.confirm !== true) {
+        throw new BlackboardError('BAD_INPUT', 'Submission refused: confirm was not true.', {
+          hint: 'Submitting a quiz is irreversible and an auto-graded test scores immediately. Show the user the attempt, get an explicit yes, then pass confirm: true.',
+        });
+      }
+
+      // Read the attempt first. Submitting something already submitted, or an
+      // attempt that does not exist, should fail before any write is attempted.
+      const before = await client.getAttempt(args.courseId, args.attemptId);
+      if (before.status && before.status !== 'IN_PROGRESS') {
+        throw new BlackboardError('FORBIDDEN', `This attempt is already ${before.status}.`, {
+          hint: 'Only an IN_PROGRESS attempt can be submitted. Use bb_review_quiz_attempt to inspect what was recorded.',
+        });
+      }
+
+      const answered = await client
+        .listAttemptAnswers(args.courseId, args.attemptId)
+        .catch(() => []);
+      const blank = answered.filter(
+        (a) => a.givenAnswer === undefined || a.givenAnswer === null,
+      ).length;
+
+      const result = await client.submitAssessmentAttempt(args.courseId, args.attemptId);
+      const receipt = result.attemptReceipt;
+      const submitted = receipt?.receiptId !== undefined;
+
+      return text(
+        [
+          submitted ? '# Quiz submitted' : '# Submission may not have completed',
+          '',
+          table([
+            { field: 'attemptId', value: result.id },
+            { field: 'status', value: result.status },
+            { field: 'receipt', value: receipt?.receiptId ?? '(none returned)' },
+            { field: 'submitted at', value: when(receipt?.submissionDate ?? result.attemptDate) },
+            { field: 'late', value: receipt?.lateSubmission === true ? 'YES' : 'no' },
+            { field: 'score', value: result.displayGrade?.score },
+            { field: 'questions', value: answered.length || undefined },
+            { field: 'left blank', value: blank || undefined },
+          ]),
+          '',
+          receipt?.lateSubmission === true ? '**Recorded as a late submission.**' : '',
+          submitted
+            ? 'Keep the receipt id as proof. Timestamps are UTC.'
+            : 'No receipt came back, so treat this as unconfirmed and check in Blackboard directly.',
+        ].join('\n'),
+      );
+    }),
+  );
 }
