@@ -318,6 +318,7 @@ Every course tool takes a `courseId`, an internal id like `_12345_1` rather than
 | `bb_get_grade_detail` | Score, letter grade, attempts, submissions, instructor feedback |
 | `bb_grade_summary` | Per-course standing and averages |
 | `bb_review_quiz_attempt` | Read a quiz back question by question, with your answers and scores |
+| `bb_submission_status` | Definitive "has this been submitted?", with attempt id and timestamp |
 
 ### Deadlines
 | Tool | Purpose |
@@ -394,6 +395,17 @@ Two constraints, because that URL is written by a third party and arrives as unt
 - **No credentials.** These fetches carry no Blackboard session and no Google auth, so only material the instructor already made link-shareable is reachable. A privately shared document reports that plainly instead of returning a sign-in page dressed up as slides.
 
 Formats default to the cheapest to read (`txt` for decks and documents, `csv` for sheets). Pass `format` for `pdf`, `pptx`, `docx` or `xlsx`.
+
+## Timestamps are UTC
+
+Every timestamp the API returns is true UTC, and the `Z` suffix means what it says. This is worth stating because the Ultra web interface renders in the viewer's timezone, which makes "local wall clock stamped as Z" a reasonable suspicion, and that is exactly the wrong conclusion to reach about a deadline.
+
+Two worked examples from a live tenant:
+
+- A deadline shown in the UI as 23:59 Europe/Madrid comes back as `2026-09-16T21:59:00.000Z`. The `:59` is the fingerprint of a correctly stored local 23:59.
+- A submission made at 14:07 Madrid reads back as `submitted: 2026-09-18T12:07:53.407Z`.
+
+So convert for display, and never treat the value as local. Telling a student the wrong deadline is this library's highest-consequence silent failure.
 
 ## Adapting to your institution
 

@@ -592,6 +592,103 @@ export class BlackboardClient {
     return res?.submissionServices ?? [];
   }
 
+
+  /**
+   * Answers one question of an in-progress assessment attempt.
+   *
+   * `answerId` is the answer-record id from `listAttemptAnswers`, not the
+   * question id. `givenAnswer` is shaped by the question type: a
+   * `multipleanswer` question takes an array of booleans aligned by index with
+   * `question.answers`, while free text takes a string.
+   *
+   * Only the minimal body is sent. The web UI echoes the entire question object
+   * back on every keystroke; the server does not require it.
+   */
+  async saveQuizAnswer(
+    courseId: string,
+    attemptId: string,
+    answerId: string,
+    opts: { questionType: string; givenAnswer: unknown },
+  ): Promise<BbQuestionAttempt> {
+    return this.http.json<BbQuestionAttempt>({
+      method: 'PATCH',
+      path: expand('attemptAnswer', { courseId, attemptId, answerId }),
+      body: { questionType: opts.questionType, givenAnswer: opts.givenAnswer },
+      headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+    });
+  }
+
+  /**
+   * Answers the question a user actually asks: has this been submitted?
+   *
+   * Getting this right needs care, because the obvious reads all mislead:
+   *
+   *  - `listColumnAttempts` is the instructor view. A student role receives an
+   *    empty page rather than a 403, so an empty list is indistinguishable from
+   *    "not submitted" and must never be presented as such.
+   *  - `listGrades().status` reports `NEEDS_GRADING` on columns with no
+   *    submission at all, so it is not a discriminator on its own.
+   *  - `getColumnGrades` throws NOT_FOUND when no grade record exists yet,
+   *    which *is* meaningful: no record means no attempt.
+   *
+   * So the authority is the grade record's attempt ids, with a missing record
+   * treated as "not submitted".
+   */
+  async getSubmissionStatus(
+    courseId: string,
+    columnId: string,
+    userId?: string,
+  ): Promise<{
+    submitted: boolean;
+    attemptId?: string;
+    status?: string;
+    submittedAt?: string;
+    late?: boolean;
+    attemptCount?: number;
+  }> {
+    let grades: BbGrade[];
+    try {
+      grades = await this.getColumnGrades(courseId, columnId, userId);
+    } catch (err) {
+      const code = err instanceof BlackboardError ? err.code : '';
+      // No grade record is the tenant's way of saying "never attempted".
+      if (code === 'NOT_FOUND') return { submitted: false };
+      throw err;
+    }
+
+    const grade = grades[0];
+    if (!grade) return { submitted: false };
+
+    const attemptId =
+      grade.lastAttemptId ?? grade.firstAttemptId ?? grade.highestAttemptId ?? undefined;
+    if (!attemptId) {
+      return { submitted: false, status: grade.status ?? undefined };
+    }
+
+    // Read the attempt itself for the authoritative timestamp and receipt.
+    let attempt: BbAttempt | undefined;
+    try {
+      attempt = await this.getAttempt(courseId, attemptId);
+    } catch {
+      /* the id is enough to know something was submitted */
+    }
+
+    let attemptCount: number | undefined;
+    if (grade.id) {
+      const rows = await this.listGradeAttempts(courseId, columnId, grade.id).catch(() => []);
+      if (rows.length > 0) attemptCount = rows.length;
+    }
+
+    return {
+      submitted: true,
+      attemptId,
+      status: attempt?.status ?? grade.status ?? undefined,
+      submittedAt: attempt?.attemptReceipt?.submissionDate ?? attempt?.attemptDate ?? undefined,
+      late: attempt?.attemptReceipt?.lateSubmission,
+      attemptCount,
+    };
+  }
+
   // ── submission (writes) ─────────────────────────────────────────────────
 
   /**

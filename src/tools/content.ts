@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { getClient, guard, text, table, when, clip, section } from './helpers.js';
+import { getClient, guard, text, table, when, clip, section, relativeDue } from './helpers.js';
 import { courseLabel, fileDetailOf, isContainer, type BbContent } from '../client/index.js';
 import { htmlToText, extractEmbeddedFiles } from '../lib/extract.js';
 import { fmtBytes } from '../lib/files.js';
 import { recogniseExternalDocument, linkTargetOf } from '../lib/external.js';
+import { assignmentBriefOf } from '../lib/brief.js';
 
 /** Short, scannable label for a content item's type. */
 export function handlerLabel(handler: string | undefined): string {
@@ -202,6 +203,36 @@ export function registerContentTools(server: McpServer): void {
         }
       }
 
+      // Assignment and test details live several levels inside contentDetail and
+      // are unreachable from `body`, which is empty on those items.
+      const brief = assignmentBriefOf(item);
+      let briefBody = '';
+      if (brief) {
+        briefBody = table([
+          { field: 'due', value: brief.dueDate ? `${when(brief.dueDate)} (${relativeDue(brief.dueDate)}) UTC` : undefined },
+          { field: 'points possible', value: brief.pointsPossible },
+          { field: 'attempts allowed', value: brief.attemptsAllowed },
+          { field: 'accepts text', value: brief.allowsText === undefined ? undefined : brief.allowsText ? 'yes' : 'no' },
+          { field: 'accepts files', value: brief.allowsFiles === undefined ? undefined : brief.allowsFiles ? 'yes' : 'no' },
+          { field: 'due date enforced', value: brief.dueDateEnforced ? 'yes' : undefined },
+          { field: 'late attempts blocked', value: brief.lateAttemptsBlocked ? 'YES' : undefined },
+          { field: 'timer', value: brief.timer },
+          { field: 'password required', value: brief.requiresPassword ? 'yes' : undefined },
+          { field: 'secure browser', value: brief.requiresSecureBrowser ? 'required' : undefined },
+          { field: 'webcam', value: brief.requiresWebcam ? 'required' : undefined },
+          { field: 'backtracking', value: brief.backtrackingProhibited ? 'not allowed' : undefined },
+          { field: 'questions randomised', value: brief.questionsRandomised ? 'yes' : undefined },
+          { field: 'reveals score', value: brief.showsScore === false ? 'no' : undefined },
+          { field: 'reveals correct answers', value: brief.showsCorrectAnswers === false ? 'no' : undefined },
+        ]);
+        if (brief.instructionsText) {
+          briefBody += `\n\n**Instructions**\n\n${clip(brief.instructionsText, 3000)}`;
+        }
+        if (brief.links.length > 0) {
+          briefBody += `\n\n${table(brief.links.map((url) => ({ link: url })))}`;
+        }
+      }
+
       const embedded = bodyHtml ? extractEmbeddedFiles(bodyHtml) : [];
       const embeddedInfo = embedded.length
         ? table(embedded.map((e) => ({ embeddedPath: e.url })))
@@ -225,6 +256,7 @@ export function registerContentTools(server: McpServer): void {
           section('Body', body),
           section('Attached file', fileInfo),
           section('Link target', linkInfo),
+          section('Assignment brief', briefBody),
           section('Gradebook', gradeInfo),
           section('Files embedded in body', embeddedInfo),
           section('Children', children),

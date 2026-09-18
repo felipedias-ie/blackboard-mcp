@@ -80,8 +80,13 @@ export const DEFAULT_ENDPOINTS = {
   columnGrades: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/grades',
   attempt: '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}',
   /**
-   * GET lists a column's attempts. POST creates a draft attempt, which is the
-   * first half of submitting work; the body carries `status: "IN_PROGRESS"`.
+   * POST creates a draft attempt, which is the first half of submitting work;
+   * the body carries `status: "IN_PROGRESS"`.
+   *
+   * GET is the instructor-facing "every attempt on this column" view. **A
+   * student role gets an empty page rather than a permission error**, so an
+   * empty result here does not mean "nothing submitted". Use
+   * `getSubmissionStatus` for that question.
    */
   columnAttempts: '/learn/api/v1/courses/{courseId}/gradebook/columns/{columnId}/attempts',
   /** Per-student due-date exceptions. POST with `{membershipIds:[...]}` reads them. */
@@ -109,6 +114,17 @@ export const DEFAULT_ENDPOINTS = {
   attemptAnswers: '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}/assessment/answers',
   attemptAnswerGrades:
     '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}/assessment/answers/grades',
+  /**
+   * One answer record on an in-progress assessment attempt. PATCH stores the
+   * response to that question.
+   *
+   * `{answerId}` is the id of the *answer record* from `attemptAnswers`, not the
+   * question id. The minimal accepted body is
+   * `{questionType, givenAnswer}`; the web UI additionally echoes the whole
+   * question object back, which is not required.
+   */
+  attemptAnswer:
+    '/learn/api/v1/courses/{courseId}/gradebook/attempts/{attemptId}/assessment/answers/{answerId}',
   /** Proctoring services available on the instance. */
   proctoringServices: '/learn/api/public/v1/proctoring/services',
   /** Returned an empty object on every capture available; shape unknown. */

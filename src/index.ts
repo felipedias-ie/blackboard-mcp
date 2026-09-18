@@ -31,6 +31,9 @@ export { BlackboardError, toBlackboardError, type ErrorCode } from './lib/errors
 export { downloadToDisk, rawFileUrl, safeFileName, fmtBytes, type DownloadResult } from './lib/files.js';
 export { extractText, htmlToText, extractEmbeddedFiles, type ExtractResult } from './lib/extract.js';
 export {
+  assignmentBriefOf, plainText, extractLinks, type AssignmentBrief,
+} from './lib/brief.js';
+export {
   recogniseExternalDocument, fetchExternalDocument, linkTargetOf, externalFileName,
   type ExternalDocument, type ExternalKind, type ExternalFetchResult,
 } from './lib/external.js';

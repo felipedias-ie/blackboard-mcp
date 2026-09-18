@@ -305,23 +305,22 @@ export function registerGradeTools(server: McpServer): void {
         }
 
         if (blocks.length === 0) {
-          // No attempt ids on the grade record: fall back to listing the column's
-          // attempts directly, which works for instructor-role sessions.
-          try {
-            const list = await client.listColumnAttempts(courseId, columnId, { limit: 10 });
-            attemptsBody = list.length
-              ? table(
-                  list.map((a) => ({
-                    attemptId: a.id,
-                    submitted: when(a.attemptDate),
-                    status: a.status,
-                    score: a.displayGrade?.score,
-                  })),
-                )
-              : '_No attempts recorded._';
-          } catch {
-            attemptsBody = '_No attempts recorded._';
-          }
+          // Do not fall back to listColumnAttempts here. That is the instructor
+          // view, and a student role gets an empty page rather than a 403, so
+          // its empty result would render as "no attempts" for work that was in
+          // fact submitted. Ask the authoritative source instead.
+          const status = await client
+            .getSubmissionStatus(courseId, columnId)
+            .catch(() => ({ submitted: false }) as Awaited<ReturnType<typeof client.getSubmissionStatus>>);
+          attemptsBody = status.submitted
+            ? table([
+                { field: 'submitted', value: 'yes' },
+                { field: 'attemptId', value: status.attemptId },
+                { field: 'status', value: status.status },
+                { field: 'submitted at', value: when(status.submittedAt) },
+                { field: 'late', value: status.late === true ? 'YES' : undefined },
+              ])
+            : '_No submission on record for this item._';
         } else {
           attemptsBody = blocks.join('\n\n');
         }
@@ -715,6 +714,48 @@ export function registerGradeTools(server: McpServer): void {
           ]),
           notes.length ? `\n> ${notes.join(' ')}\n` : '',
           blocks.join('\n\n---\n\n'),
+        ].join('\n'),
+      );
+    }),
+  );
+  server.registerTool(
+    'bb_submission_status',
+    {
+      title: 'Has this been submitted?',
+      description:
+        'Definitive answer to whether an assignment has been submitted, with the attempt id, timestamp and late flag. Use this rather than inferring from a grade list or attempt list, both of which can read as "not submitted" for work that was submitted.',
+      inputSchema: {
+        courseId: z.string().describe('Course id, e.g. "_12345_1".'),
+        columnId: z.string().describe('Gradebook column id from bb_list_grades.'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    guard('bb_submission_status', async ({ courseId, columnId }) => {
+      const client = await getClient();
+      const [column, status] = await Promise.all([
+        client.getGradeColumn(courseId, columnId).catch(() => undefined),
+        client.getSubmissionStatus(courseId, columnId),
+      ]);
+
+      return text(
+        [
+          `# ${column ? columnName(column) : columnId}`,
+          '',
+          status.submitted ? '**Submitted.**' : '**Not submitted.**',
+          '',
+          table([
+            { field: 'attemptId', value: status.attemptId },
+            { field: 'status', value: status.status },
+            { field: 'submitted at', value: when(status.submittedAt) },
+            { field: 'late', value: status.late === true ? 'YES' : status.late === false ? 'no' : undefined },
+            { field: 'attempts', value: status.attemptCount },
+            { field: 'due', value: column?.dueDate ? `${when(column.dueDate)} (${relativeDue(column.dueDate)})` : undefined },
+            { field: 'points possible', value: column?.possible },
+          ]),
+          '',
+          status.submitted
+            ? '_All timestamps are UTC. Convert for display._'
+            : '_Derived from the gradebook record. A missing grade record means no attempt exists._',
         ].join('\n'),
       );
     }),
