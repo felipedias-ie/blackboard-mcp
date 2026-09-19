@@ -382,6 +382,20 @@ function stripDomainHash(buf: Buffer): Buffer {
   return nonPrintable >= 8 ? buf.subarray(32) : buf;
 }
 
+/**
+ * Cookie values are US-ASCII (RFC 6265), so a correctly decrypted value is
+ * printable. Wrong-key output is UTF-8 replacement characters or control
+ * bytes, which lets us tell a stale keyring secret from a working one.
+ */
+function looksLikeCookieValue(value: string): boolean {
+  if (!value) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e) return false;
+  }
+  return true;
+}
+
 // ── public API ────────────────────────────────────────────────────────────
 
 /**
@@ -412,18 +426,32 @@ export async function readBrowserCookies(
   }
 
   const keys = await chromiumKey(profile);
+  // A Linux keyring can hold a stale or wrong "Safe Storage" secret (common
+  // when a profile's cookie DB was created under a different keyring). The
+  // wrong key does not throw — it yields mojibake — so also try the documented
+  // Chromium fallback and keep whichever candidate decrypts to plausible data.
+  const candidates = [keys];
+  if (!isWin && !isMac) {
+    const fallback = { v10: pbkdf2Sync('peanuts', 'saltysalt', 1, 16, 'sha1') };
+    if (!keys.v10 || !keys.v10.equals(fallback.v10)) candidates.push(fallback);
+  }
   const out: BrowserCookie[] = [];
   let failures = 0;
 
   for (const r of rows) {
     const enc = r.encrypted_value as Buffer | Uint8Array | null;
     try {
-      const value = decryptValue(
-        Buffer.isBuffer(enc) ? enc : Buffer.from(enc ?? []),
-        keys,
-        r.value as string | undefined,
-      );
-      if (!value) continue;
+      const buffer = Buffer.isBuffer(enc) ? enc : Buffer.from(enc ?? []);
+      let value = '';
+      for (const candidate of candidates) {
+        value = decryptValue(buffer, candidate, r.value as string | undefined);
+        if (looksLikeCookieValue(value)) break;
+        value = '';
+      }
+      if (!value) {
+        failures += 1;
+        continue;
+      }
       out.push({
         host: String(r.host_key ?? ''),
         name: String(r.name ?? ''),
