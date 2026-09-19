@@ -2,7 +2,7 @@ import { Session } from '../auth/session.js';
 import { loadConfigOrNull, type Config } from '../config.js';
 import { HttpClient } from './http.js';
 import { expand } from './endpoints.js';
-import { notConfigured, BlackboardError } from '../lib/errors.js';
+import { notConfigured, BlackboardError, toBlackboardError } from '../lib/errors.js';
 import { log } from '../lib/logger.js';
 import type {
   Paged, BbUser, BbCourse, BbTerm, BbMembership, BbContent, BbAttachment,
@@ -593,23 +593,125 @@ export class BlackboardClient {
   /**
    * The Ultra to-do widget: overdue, due today, and upcoming in one call.
    * Buckets are flattened with `_bucket` set so callers can group them again.
+   *
+   * Two server quirks are handled here rather than by each caller:
+   *  - the endpoint caps the `since`..`until` span (16 days on the tenants we
+   *    have seen), so a wider request is split into legal chunks;
+   *  - some tenants leave `overdueItems` empty (or list only still-actionable
+   *    ones), so the calendar's gradebook due dates are merged in to give the
+   *    full overdue picture.
    */
   async listTodo(opts: { since: string; until: string }): Promise<BbTodoItem[]> {
-    const res = await this.http.json<BbTodoResponse>({
-      path: expand('todoItems'),
-      query: { since: opts.since, until: opts.until },
-    });
-    const tag = (rows: BbTodoItem[] | undefined, bucket: BbTodoItem['_bucket']): BbTodoItem[] =>
-      (rows ?? []).map((r) => ({
-        ...r,
-        _bucket: bucket,
-        _courseId: r.column?.courseId,
-      }));
-    return [
-      ...tag(res?.overdueItems, 'overdue'),
-      ...tag(res?.dueTodayItems, 'dueToday'),
-      ...tag(res?.futureDueItems, 'upcoming'),
-    ];
+    const sinceMs = Date.parse(opts.since);
+    const untilMs = Date.parse(opts.until);
+
+    const [nativeRes, calRes] = await Promise.allSettled([
+      this.nativeTodo(sinceMs, untilMs),
+      this.todoFromCalendar(opts),
+    ]);
+
+    if (nativeRes.status === 'rejected' && calRes.status === 'rejected') {
+      const err = nativeRes.reason;
+      throw err instanceof BlackboardError ? err : toBlackboardError(err);
+    }
+    if (calRes.status === 'rejected') return nativeRes.status === 'fulfilled' ? nativeRes.value : [];
+    if (nativeRes.status === 'rejected') {
+      log.warn('To-do endpoint unavailable; using calendar items only');
+      return calRes.value;
+    }
+
+    // Native rows win on conflict (they carry point values and the server's own
+    // actionability rules); calendar rows fill in everything the endpoint omits.
+    const key = (i: BbTodoItem): string => `${i.column?.id ?? i.title}|${i.dueDate}`;
+    const merged = [...nativeRes.value];
+    const seen = new Set(merged.map(key));
+    for (const item of calRes.value) {
+      if (seen.has(key(item))) continue;
+      seen.add(key(item));
+      merged.push(item);
+    }
+    return merged;
+  }
+
+  /**
+   * Calls the native to-do endpoint, splitting the range because Blackboard
+   * rejects any request whose `since`..`until` span exceeds the server's cap.
+   * Buckets are recomputed from each item's due date so chunked results merge
+   * consistently.
+   */
+  private async nativeTodo(sinceMs: number, untilMs: number): Promise<BbTodoItem[]> {
+    const MAX_SPAN_MS = 16 * 86_400_000;
+    const seen = new Set<string>();
+    const out: BbTodoItem[] = [];
+
+    for (let start = sinceMs; start < untilMs; start += MAX_SPAN_MS) {
+      const end = Math.min(start + MAX_SPAN_MS, untilMs);
+      const res = await this.http.json<BbTodoResponse>({
+        path: expand('todoItems'),
+        query: { since: new Date(start).toISOString(), until: new Date(end).toISOString() },
+      });
+      const rows: Array<[BbTodoItem[] | undefined, BbTodoItem['_bucket']]> = [
+        [res?.overdueItems, 'overdue'],
+        [res?.dueTodayItems, 'dueToday'],
+        [res?.futureDueItems, 'upcoming'],
+      ];
+      for (const [list, fallbackBucket] of rows) {
+        for (const item of list ?? []) {
+          const key = `${item.column?.id ?? item.title}|${item.dueDate}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push({
+            ...item,
+            _bucket: item.dueDate ? this.todoBucket(item.dueDate) : fallbackBucket,
+            _courseId: item.column?.courseId,
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Which to-do bucket a due date falls into, relative to the local day. */
+  private todoBucket(dueDate: string, now = new Date()): BbTodoItem['_bucket'] {
+    const due = Date.parse(dueDate);
+    if (!Number.isFinite(due)) return 'upcoming';
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (due < startOfToday) return 'overdue';
+    if (due < startOfToday + 86_400_000) return 'dueToday';
+    return 'upcoming';
+  }
+
+  /**
+   * Rebuilds the to-do buckets from the calendar API.
+   *
+   * Gradebook due dates surface as `GradableItem` calendar entries: the entry's
+   * `itemSourceId` is the gradebook column id and `calendarId` is the course id,
+   * so the result is interchangeable with the native to-do payload.
+   */
+  private async todoFromCalendar(opts: { since: string; until: string }): Promise<BbTodoItem[]> {
+    const items = await this.listCalendarItems({ ...opts, limit: 400 });
+    const seen = new Set<string>();
+    const out: BbTodoItem[] = [];
+
+    for (const i of items) {
+      if (i.itemSourceType !== 'blackboard.platform.gradebook2.GradableItem') continue;
+      const due = i.endDate ?? i.startDate;
+      if (!due) continue;
+      const key = `${i.itemSourceId ?? i.id ?? i.title}|${due}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push({
+        title: i.title,
+        dueDate: due,
+        _bucket: this.todoBucket(due),
+        _courseId: i.calendarId,
+        column: i.itemSourceId
+          ? ({ id: i.itemSourceId, courseId: i.calendarId, name: i.title } as unknown as BbGradeColumn)
+          : undefined,
+      });
+    }
+    return out;
   }
 
   // ── messages ────────────────────────────────────────────────────────────
