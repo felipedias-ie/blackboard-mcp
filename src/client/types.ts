@@ -391,7 +391,7 @@ export interface BbTodoItem {
   isLateAttemptCreationDisallowed?: boolean;
 
   /** Injected: which bucket the item came from. */
-  _bucket?: 'overdue' | 'dueToday' | 'upcoming';
+  _bucket?: 'overdue' | 'dueToday' | 'upcoming' | 'submitted';
   _courseId?: string;
   _courseName?: string;
 }
