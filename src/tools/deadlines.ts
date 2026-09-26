@@ -11,7 +11,7 @@ export function registerDeadlineTools(server: McpServer): void {
     {
       title: 'What is due on Blackboard',
       description:
-        'The student to-do list: everything overdue, due today, and coming up, across all courses, in one call. This is the right tool for "what do I have due?", "am I behind?", or "what should I work on?". Grouped by urgency and sorted by date.',
+        'The student to-do list: everything overdue, due today, and coming up, across all courses, in one call. Items already submitted (awaiting grade) are listed separately from genuinely overdue work, so the overdue section only contains items that still need doing. This is the right tool for "what do I have due?", "am I behind?", or "what should I work on?". Grouped by urgency and sorted by date.',
       inputSchema: {
         days: z
           .number()
@@ -48,7 +48,7 @@ export function registerDeadlineTools(server: McpServer): void {
         })),
       );
 
-      const bucket = (name: 'overdue' | 'dueToday' | 'upcoming') =>
+      const bucket = (name: 'overdue' | 'submitted' | 'dueToday' | 'upcoming') =>
         named
           .filter((i) => i._bucket === name)
           .sort((a, b) => (a.dueDate ?? '').localeCompare(b.dueDate ?? ''))
@@ -62,10 +62,11 @@ export function registerDeadlineTools(server: McpServer): void {
           }));
 
       const overdue = args.includeOverdue === false ? [] : bucket('overdue');
+      const submitted = bucket('submitted');
       const today = bucket('dueToday');
       const upcoming = bucket('upcoming');
 
-      if (overdue.length + today.length + upcoming.length === 0) {
+      if (overdue.length + submitted.length + today.length + upcoming.length === 0) {
         return text(
           `Nothing due between ${when(since)} and ${when(until)}.\n\nNote this reflects items with due dates set in the gradebook. Work assigned without a due date will not appear. Use \`bb_browse_course\` to check a specific course.`,
         );
@@ -77,6 +78,9 @@ export function registerDeadlineTools(server: McpServer): void {
           '',
           `Window: ${when(since)} to ${when(until)}`,
           overdue.length ? `\n## Overdue (${overdue.length})\n\n${table(overdue)}` : '',
+          submitted.length
+            ? `\n## Submitted - awaiting grade (${submitted.length})\n\n${table(submitted)}`
+            : '',
           today.length ? `\n## Due today (${today.length})\n\n${table(today)}` : '',
           upcoming.length ? `\n## Upcoming (${upcoming.length})\n\n${table(upcoming)}` : '',
           '',
