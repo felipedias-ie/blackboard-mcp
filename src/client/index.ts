@@ -35,15 +35,6 @@ export interface BatchResult<T = unknown> {
   body?: T;
 }
 
-/** True when a grade row shows the student handed work in for the column. */
-export function gradeHasSubmission(g: BbGrade): boolean {
-  return (
-    Boolean(g.lastAttemptId) ||
-    Boolean(g.firstAttemptId) ||
-    g.submissionStatus?.status === 'NEEDS_GRADING'
-  );
-}
-
 /**
  * Moves action-bucket items whose column has a recorded submission into the
  * `submitted` bucket. Pure, so it is unit-testable without a live session.
@@ -1064,9 +1055,14 @@ export class BlackboardClient {
    * overdue/due-today buckets into `submitted`.
    *
    * The to-do endpoint only reports due dates, so "overdue" conflates "not done"
-   * with "done, not graded". The grade row's attempt ids are the authoritative
-   * signal that work was handed in. One batch fan-out covers every affected
-   * course; if it fails the buckets are left untouched.
+   * with "done, not graded". One batch fan-out finds the grade records for
+   * every affected course; if it fails the buckets are left untouched.
+   *
+   * A record's attempt ids are not proof of a submission, because a saved
+   * draft is an attempt too (see `readAttempts`). So the attempts behind each
+   * listed item are read, and an item moves only when one was really handed
+   * in. Hiding work from Overdue needs that proof: an attempt that cannot be
+   * read leaves the item where it is.
    */
   private async annotateSubmissions(items: BbTodoItem[]): Promise<BbTodoItem[]> {
     const byCourse = new Map<string, BbTodoItem[]>();
@@ -1080,13 +1076,14 @@ export class BlackboardClient {
     }
     if (byCourse.size === 0) return items;
 
+    const courseIds = [...byCourse.keys()];
     let responses: Array<BatchResult<Paged<BbGrade>>> = [];
     try {
       const userId = await this.selfId();
       responses = await this.batch<Paged<BbGrade>>(
-        [...byCourse.keys()].map((courseId) => ({
+        courseIds.map((courseId) => ({
           method: 'GET' as const,
-          relativeUrl: `v1/courses/${courseId}/gradebook/grades?userId=${userId}&limit=100&expand=column,submissionStatus`,
+          relativeUrl: `v1/courses/${courseId}/gradebook/grades?userId=${userId}&limit=100&expand=column`,
         })),
       );
     } catch (err) {
@@ -1094,17 +1091,22 @@ export class BlackboardClient {
       return items;
     }
 
-    const submitted = new Set<string>();
+    const checks: Array<Promise<string | undefined>> = [];
     responses.forEach((res, idx) => {
-      const courseId = [...byCourse.keys()][idx];
+      const courseId = courseIds[idx];
       if (!courseId) return;
       const status = res.status ?? res.code ?? 200;
       if (status >= 400) return;
+      const listed = new Set((byCourse.get(courseId) ?? []).map((i) => i.column?.id));
       for (const g of res.body?.results ?? []) {
         const columnId = g.columnId ?? g.column?.id;
-        if (columnId && gradeHasSubmission(g)) submitted.add(columnId);
+        if (!columnId || !listed.has(columnId) || attemptIds(g).length === 0) continue;
+        checks.push(
+          this.readAttempts(courseId, g).then((r) => (r.handedIn.length > 0 ? columnId : undefined)),
+        );
       }
     });
+    const submitted = new Set((await Promise.all(checks)).filter((id): id is string => Boolean(id)));
 
     return rebucketSubmitted(items, submitted);
   }
