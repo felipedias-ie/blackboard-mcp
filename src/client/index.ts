@@ -1029,24 +1029,48 @@ export class BlackboardClient {
   }
 
   /**
-   * The Ultra to-do widget: overdue, due today, and upcoming in one call.
+   * The Ultra to-do widget: overdue, due today, and upcoming.
    * Buckets are flattened with `_bucket` set so callers can group them again.
+   *
+   * The endpoint rejects a since..until span over 16 days with HTTP 400 ("The
+   * time span between since and until exceeds the maximum"), measured on two
+   * unrelated tenants, and bb_todo's default window is 44 days, so it failed
+   * on every call. Wider windows are split into 16-day requests and merged;
+   * an item on a boundary arrives twice and is kept once.
    */
   async listTodo(opts: { since: string; until: string }): Promise<BbTodoItem[]> {
-    const res = await this.http.json<BbTodoResponse>({
-      path: expand('todoItems'),
-      query: { since: opts.since, until: opts.until },
-    });
+    const from = Date.parse(opts.since);
+    const to = Date.parse(opts.until);
+    const windows: Array<{ since: string; until: string }> = [];
+    for (let start = from; start < to; start += TODO_MAX_SPAN_MS) {
+      const end = Math.min(start + TODO_MAX_SPAN_MS, to);
+      windows.push({ since: new Date(start).toISOString(), until: new Date(end).toISOString() });
+    }
+    // A window that will not parse is passed through, and the server judges it.
+    if (windows.length === 0) windows.push(opts);
+
+    const pages = await Promise.all(
+      windows.map((w) => this.http.json<BbTodoResponse>({ path: expand('todoItems'), query: w })),
+    );
+
+    const seen = new Set<string>();
     const tag = (rows: BbTodoItem[] | undefined, bucket: BbTodoItem['_bucket']): BbTodoItem[] =>
-      (rows ?? []).map((r) => ({
-        ...r,
-        _bucket: bucket,
-        _courseId: r.column?.courseId,
-      }));
+      (rows ?? [])
+        .filter((r) => {
+          const key = `${r.column?.id ?? r.title}|${r.dueDate}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((r) => ({
+          ...r,
+          _bucket: bucket,
+          _courseId: r.column?.courseId,
+        }));
     return this.annotateSubmissions([
-      ...tag(res?.overdueItems, 'overdue'),
-      ...tag(res?.dueTodayItems, 'dueToday'),
-      ...tag(res?.futureDueItems, 'upcoming'),
+      ...pages.flatMap((p) => tag(p?.overdueItems, 'overdue')),
+      ...pages.flatMap((p) => tag(p?.dueTodayItems, 'dueToday')),
+      ...pages.flatMap((p) => tag(p?.futureDueItems, 'upcoming')),
     ]);
   }
 
@@ -1187,6 +1211,9 @@ export function displayName(user: BbUser): string {
   if (parts.length) return parts.join(' ');
   return preferred ?? user.userName ?? user.id;
 }
+
+/** The widest since..until span the to-do endpoint accepts (16 days). */
+const TODO_MAX_SPAN_MS = 16 * 86_400_000;
 
 /** The distinct attempts a grade record points at, latest first. */
 export function attemptIds(grade: BbGrade): string[] {

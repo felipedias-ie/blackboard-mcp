@@ -33,6 +33,59 @@ describe('todo submission annotation', () => {
   });
 });
 
+describe('listTodo windowing', () => {
+  const DAY = 86_400_000;
+
+  /** Records every to-do request; `respond` builds the reply for one window. */
+  function recorder(respond: (q: { since: string; until: string }) => unknown = () => ({})) {
+    const windows: Array<{ since: string; until: string }> = [];
+    const http = {
+      session: { persist: async () => {} },
+      json: async (opts: { path: string; method?: string; query?: { since: string; until: string } }) => {
+        if (opts.path.endsWith('/calendars/todo/studentItems') && opts.query) {
+          windows.push(opts.query);
+          return respond(opts.query);
+        }
+        if (opts.path.endsWith('/users/me')) return { id: '_u_1' };
+        if (opts.method === 'PUT') return [];
+        throw new Error(`unexpected request ${opts.path}`);
+      },
+    };
+    return { client: new BlackboardClient(http as never, config), windows };
+  }
+
+  test("splits bb_todo's 44-day default into spans the server accepts", async () => {
+    // The endpoint answers HTTP 400 to anything over 16 days.
+    const { client, windows } = recorder();
+    const since = '2026-09-14T18:00:00.000Z';
+    const until = new Date(Date.parse(since) + 44 * DAY).toISOString();
+
+    await client.listTodo({ since, until });
+
+    assert.equal(windows.length, 3);
+    for (const w of windows) assert.ok(Date.parse(w.until) - Date.parse(w.since) <= 16 * DAY);
+    assert.equal(windows[0]?.since, since, 'starts where asked');
+    assert.equal(windows.at(-1)?.until, until, 'ends where asked');
+    for (let i = 1; i < windows.length; i += 1) {
+      assert.equal(windows[i]?.since, windows[i - 1]?.until, 'no gaps between windows');
+    }
+  });
+
+  test('sends a window within the cap unchanged, in one request', async () => {
+    const { client, windows } = recorder();
+    await client.listTodo({ since: '2026-10-01T00:00:00.000Z', until: '2026-10-17T00:00:00.000Z' });
+    assert.deepEqual(windows, [{ since: '2026-10-01T00:00:00.000Z', until: '2026-10-17T00:00:00.000Z' }]);
+  });
+
+  test('keeps an item once when two windows both return it', async () => {
+    const shared = { title: 'Essay', dueDate: '2026-10-10T21:00:00.000Z', column: { id: '_c1_1', courseId: '_1_1' } };
+    const { client } = recorder(() => ({ futureDueItems: [shared] }));
+    const out = await client.listTodo({ since: '2026-10-01T00:00:00.000Z', until: '2026-11-10T00:00:00.000Z' });
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?._bucket, 'upcoming');
+  });
+});
+
 describe('listTodo submitted bucket', () => {
   /**
    * One course whose to-do list holds every grade-record shape measured on a
