@@ -71,20 +71,31 @@ export class BlackboardClient {
   ): Promise<T[]> {
     const limit = opts.limit ?? this.config.pageSize;
     const out: T[] = [];
+    let offset = opts.offset ?? 0;
     let next: string | undefined = path;
     let query: Record<string, string | number | boolean | undefined> | undefined = {
       ...opts.query,
       limit: Math.min(limit, 100),
-      offset: opts.offset ?? 0,
+      offset,
     };
 
     for (let guard = 0; next && out.length < limit && guard < 50; guard += 1) {
       const page: Paged<T> = await this.http.json<Paged<T>>({ path: next, query });
       const rows = page?.results ?? [];
       out.push(...rows);
-      next = page?.paging?.nextPage || undefined;
       query = undefined; // nextPage already carries its own query string.
       if (rows.length === 0) break;
+
+      // A link that does not move forward is not a next page. The calendar
+      // returns every entry in the window on the first page, whatever `limit`
+      // says, and still offers a nextPage: one that drops `since` and restarts
+      // at offset 0. Following it fetched the user's entire calendar history,
+      // so `bb_calendar` showed entries from years before the window.
+      const link = page?.paging?.nextPage || undefined;
+      const linkOffset = link ? offsetOf(link) : undefined;
+      if (linkOffset !== undefined && linkOffset <= offset) break;
+      if (linkOffset !== undefined) offset = linkOffset;
+      next = link;
     }
     return out.slice(0, limit);
   }
@@ -1059,6 +1070,14 @@ export function displayName(user: BbUser): string {
   const parts = [user.givenName, user.familyName].filter(Boolean);
   if (parts.length) return parts.join(' ');
   return preferred ?? user.userName ?? user.id;
+}
+
+/** The `offset` a paging link asks for, or undefined when it carries none. */
+function offsetOf(link: string): number | undefined {
+  const raw = new URL(link, 'https://placeholder.invalid').searchParams.get('offset');
+  if (raw === null) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 export function courseLabel(course: BbCourse | undefined): string {
