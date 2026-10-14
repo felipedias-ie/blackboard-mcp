@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerAllTools } from './tools/index.js';
+import { getClient } from './tools/helpers.js';
 import { registerPrompts } from './prompts/index.js';
 import { registerResources } from './resources/index.js';
 import { loadConfigOrNull } from './config.js';
@@ -78,23 +79,35 @@ export async function startStdio(): Promise<void> {
   await server.connect(transport);
 
   // Keep the Blackboard session alive in the background so a long-running
-  // client session never hits an expiry mid-conversation. Failure here is not
-  // fatal: the user may simply not have signed in yet.
+  // client session never hits an expiry mid-conversation.
+  //
+  // It must share the tools' client: a second client would hold a second copy
+  // of the session, and the two would renew and persist over each other. And it
+  // must keep trying until there is a session to keep alive: the user may sign
+  // in after the server started, which a single attempt at startup never sees.
   let stopKeeper: (() => void) | undefined;
-  void (async () => {
+  let retry: NodeJS.Timeout | undefined;
+  let closing = false;
+  const startKeeper = async (): Promise<void> => {
     try {
-      const { BlackboardClient } = await import('./client/index.js');
-      const client = await BlackboardClient.create();
+      const client = await getClient();
+      if (closing) return;
       stopKeeper = client.startSessionKeeper();
       log.debug('Session keeper started');
     } catch (err) {
-      log.debug('Session keeper not started', (err as Error).message);
+      log.debug('Session keeper not started yet', (err as Error).message);
+      if (closing) return;
+      retry = setTimeout(() => void startKeeper(), 30_000);
+      retry.unref?.();
     }
-  })();
+  };
+  void startKeeper();
 
   // Keep the shutdown quiet and prompt: clients kill the process on close.
   const shutdown = () => {
     log.info('Shutting down');
+    closing = true;
+    if (retry) clearTimeout(retry);
     stopKeeper?.();
     void server.close().finally(() => process.exit(0));
   };

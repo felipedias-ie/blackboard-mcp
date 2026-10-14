@@ -1,6 +1,6 @@
 import { CookieJar, Cookie } from 'tough-cookie';
 import { z } from 'zod';
-import { readSecret, writeSecret, purgeSecret } from './store.js';
+import { readSecret, writeSecret, purgeSecret, storedMtimeMs } from './store.js';
 import { notAuthenticated, BlackboardError } from '../lib/errors.js';
 import { log, redact } from '../lib/logger.js';
 
@@ -58,7 +58,16 @@ export class Session {
     public idpHosts: string[] = [],
   ) {}
 
+  /**
+   * Modified-time of the stored file as of our last read or write. A newer one
+   * means another process (a fresh `auth login`, a sibling's renewal) wrote it.
+   */
+  private storedMtimeMs = 0;
+
   static async load(): Promise<Session> {
+    // Stat before reading: a write landing in between then looks newer than we
+    // hold, and is re-checked, rather than being silently skipped.
+    const mtime = storedMtimeMs();
     const raw = await readSecret<unknown>();
     if (!raw) throw notAuthenticated();
     const parsed = StoredSessionSchema.safeParse(raw);
@@ -70,7 +79,7 @@ export class Session {
     }
     const s = parsed.data;
     const jar = await CookieJar.deserialize(s.jar as never);
-    return new Session(
+    const session = new Session(
       s.baseUrl,
       jar,
       s.xsrfToken,
@@ -79,6 +88,8 @@ export class Session {
       s.user,
       s.idpHosts ?? [],
     );
+    session.storedMtimeMs = mtime;
+    return session;
   }
 
   static async tryLoad(): Promise<Session | null> {
@@ -220,7 +231,58 @@ export class Session {
     log.debug('Session cookies', { names, xsrf: this.xsrfToken ? redact(this.xsrfToken) : null });
   }
 
+  /**
+   * True when this session holds cookies for the identity provider(s) it is
+   * pinned to, which is what silent renewal needs.
+   *
+   * `idpHosts` alone is not proof: it records which provider the tenant uses,
+   * and can outlive the cookies that make it usable.
+   */
+  async canAutoRefresh(): Promise<boolean> {
+    if (this.idpHosts.length === 0) return false;
+    for (const host of this.idpHosts) {
+      if ((await this.jar.getCookies(`https://${host}/`)).length > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Switches to the stored session when another process has written a newer
+   * one, and returns whether it did.
+   *
+   * The MCP server is long-lived and loads its session once. Without this, a
+   * user who re-runs `auth login` fixes the file on disk while the server keeps
+   * using (and re-persisting) the dead one it started with.
+   */
+  async adoptIfNewer(): Promise<boolean> {
+    const mtime = storedMtimeMs();
+    if (mtime <= this.storedMtimeMs) return false;
+
+    let fresh: Session | null;
+    try {
+      fresh = await Session.tryLoad();
+    } catch (err) {
+      log.debug('Could not re-read the stored session', (err as Error).message);
+      return false;
+    }
+    this.storedMtimeMs = mtime;
+    if (!fresh || fresh.baseUrl !== this.baseUrl) return false;
+    if (fresh.capturedAt.getTime() <= this.capturedAt.getTime()) return false;
+
+    this.jar = fresh.jar;
+    this.xsrfToken = fresh.xsrfToken;
+    this.capturedAt = fresh.capturedAt;
+    this.user = fresh.user ?? this.user;
+    this.idpHosts = fresh.idpHosts;
+    log.info('Picked up a newer stored session', { capturedAt: fresh.capturedAt.toISOString() });
+    return true;
+  }
+
   async persist(): Promise<void> {
+    // Never overwrite a newer sign-in made elsewhere with what we hold. This
+    // process may have been running since before the user signed in again.
+    if (await this.adoptIfNewer()) return;
+
     const payload: StoredSession = {
       version: 1,
       baseUrl: this.baseUrl,
@@ -232,6 +294,7 @@ export class Session {
       idpHosts: this.idpHosts,
     };
     await writeSecret(payload);
+    this.storedMtimeMs = storedMtimeMs();
   }
 
   get ageHours(): number {

@@ -207,13 +207,7 @@ async function authCommand(sub: string | undefined, flags: Flags): Promise<numbe
       out(`XSRF:      ${session.xsrfToken ? 'present' : 'absent'}`);
       out(`Writes:    ${config.allowWrites ? 'ENABLED' : 'read-only'}`);
       out(`Downloads: ${config.downloadDir}`);
-      out(
-        `Auto-refresh: ${
-          session.idpHosts.length > 0
-            ? `enabled via ${session.idpHosts.join(', ')}`
-            : 'unavailable (no identity-provider cookies)'
-        }`,
-      );
+      out(`Auto-refresh: ${await autoRefreshSummary(session)}`);
 
       try {
         const client = await BlackboardClient.create();
@@ -292,6 +286,17 @@ async function authCommand(sub: string | undefined, flags: Flags): Promise<numbe
       out('Usage: blackboard-mcp auth <login|status|browsers|refresh|logout>');
       return 2;
   }
+}
+
+/**
+ * Whether silent renewal can actually work, not merely which provider is pinned.
+ * A pinned provider with no stored cookies cannot renew, and saying "enabled"
+ * there hides the problem until the session expires.
+ */
+async function autoRefreshSummary(session: Session): Promise<string> {
+  if (session.idpHosts.length === 0) return 'unavailable (no identity-provider cookies)';
+  if (await session.canAutoRefresh()) return `enabled via ${session.idpHosts.join(', ')}`;
+  return `UNAVAILABLE. No cookies stored for ${session.idpHosts.join(', ')}; run \`blackboard-mcp auth login\``;
 }
 
 async function harImportCommand(file: string | undefined, flags: Flags): Promise<number> {
@@ -400,6 +405,8 @@ async function doctorCommand(): Promise<number> {
     ok('cookies', (await session.cookieNames()).join(', '));
     if (!session.xsrfToken) warn('xsrf token', 'absent: write operations will likely fail');
     else ok('xsrf token', 'present');
+    if (await session.canAutoRefresh()) ok('auto-refresh', `via ${session.idpHosts.join(', ')}`);
+    else warn('auto-refresh', 'unavailable: the session will expire in a few hours. Run `blackboard-mcp auth login`');
     if (config && session.baseUrl !== config.baseUrl) {
       bad('instance match', `session is for ${session.baseUrl}, config says ${config.baseUrl}`);
     }

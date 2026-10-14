@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, renameSync, statSync } from 'node:fs';
 import { sessionPath, stateDir, ensureDir } from '../lib/paths.js';
 import { resolveKey, deleteKey } from '../lib/keyring.js';
 import { BlackboardError } from '../lib/errors.js';
@@ -20,8 +20,23 @@ export async function writeSecret(payload: unknown): Promise<void> {
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const envelope = Buffer.concat([iv, cipher.getAuthTag(), ciphertext]);
   ensureDir(stateDir());
-  writeFileSync(sessionPath(), envelope, { mode: 0o600 });
+  // The MCP server and the CLI both write this file. Rename is atomic, so a
+  // reader in the other process sees the old session or the new one, never a
+  // half-written file that fails to decrypt.
+  const file = sessionPath();
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, envelope, { mode: 0o600 });
+  renameSync(tmp, file);
   log.debug('Session written', { bytes: envelope.length });
+}
+
+/** Last-modified time of the stored session, or 0 when there is none. */
+export function storedMtimeMs(): number {
+  try {
+    return statSync(sessionPath()).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 export async function readSecret<T>(): Promise<T | null> {

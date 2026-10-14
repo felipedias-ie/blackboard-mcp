@@ -80,11 +80,25 @@ export async function refreshSession(
       return fail(hops, hostsSeen, `refusing to send cookies to ${target.hostname}`);
     }
 
+    const cookie = await jar.getCookieString(url);
+
+    // A provider that has none of our cookies cannot recognise us, so walking to
+    // it only ends on its sign-in page. Say what is actually wrong instead.
+    if (target.hostname !== baseHost && !cookie) {
+      return {
+        ok: false,
+        hops,
+        hostsSeen: [...hostsSeen],
+        needsInteractiveLogin: true,
+        reason: `no cookies are stored for ${target.hostname}, so it cannot recognise this session`,
+      };
+    }
+
     const headers: Record<string, string> = {
       'User-Agent': session.userAgent,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
-      Cookie: await jar.getCookieString(url),
+      Cookie: cookie,
     };
     if (method === 'POST') {
       headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -156,26 +170,45 @@ export async function refreshSession(
       continue;
     }
 
+    // ── the provider answered, but only with its own sign-in page ──
+    // Reached after the `sso_reload` nudge, so this is conclusive: it has no
+    // single-sign-on session for us and no replay will change that.
+    if (target.hostname !== baseHost) {
+      const why = idpSignInRequired(html);
+      if (why) {
+        return {
+          ok: false,
+          hops,
+          hostsSeen: [...hostsSeen],
+          needsInteractiveLogin: true,
+          reason: `${target.hostname} has no usable sign-in session for this account (${why})`,
+        };
+      }
+    }
+
     // ── back on Blackboard with a new session? ──
     if (target.hostname === baseHost) {
       const after = await sessionCookieFingerprint(jar, session.baseUrl);
       if (after && after !== before) {
-        // The chain has now named the tenant's actual identity provider, so
-        // every other host's cookies were speculative and can go. Login has to
-        // import broadly (the IdP is unknowable up front), but keeping
-        // unrelated cookies (Google, Auth0, whatever else matched) would be
-        // indefensible once we know which one is real.
-        await pruneToHosts(jar, [baseHost, ...hostsSeen]);
+        // When the chain actually visited the provider it is authoritative
+        // about which one this tenant uses, so every other host's cookies were
+        // speculative and can go: login has to import broadly (the IdP is
+        // unknowable up front), and unrelated cookies (Google, Auth0, whatever
+        // else matched) should not be kept once the real one is known.
+        //
+        // But a still-valid session short-circuits at `GET /ultra -> 200`
+        // without ever leaving Blackboard. That proves nothing about which
+        // provider is real, and pruning on it deletes the provider's cookies:
+        // the only thing that lets the *next* expiry renew silently. So prune
+        // only when the chain named a provider, and never touch pinned ones.
+        const external = [...hostsSeen].filter((h) => h !== baseHost);
+        if (external.length > 0) {
+          await pruneToHosts(jar, [baseHost, ...hostsSeen, ...session.idpHosts]);
+          session.idpHosts = external;
+        }
         session.jar = jar;
         session.xsrfToken = await extractXsrf(jar, session.baseUrl);
         session.capturedAt = new Date();
-        // When the chain actually visited the provider, it is authoritative
-        // about which one this tenant uses, so narrow the allowlist to that.
-        // But a still-valid session short-circuits at `GET /ultra -> 200`
-        // without ever leaving Blackboard, and treating that as "no provider"
-        // would destroy the very capability we are trying to preserve.
-        const external = [...hostsSeen].filter((h) => h !== baseHost);
-        if (external.length > 0) session.idpHosts = external;
         await session.persist();
         log.info('Session refreshed silently', {
           hops: hops.length,
@@ -326,6 +359,36 @@ function needsInteractiveLogin(html: string, host: string, baseHost: string): bo
     /name=["'](loginfmt|passwd|username|password|j_username)["']/i.test(html) &&
     !/SAMLResponse|wresult/i.test(html)
   );
+}
+
+/**
+ * Azure AD error codes that mean "a person has to sign in", as opposed to a
+ * transient fault. 50058 is the common one: the provider received no usable
+ * single-sign-on session, which is exactly a provider-cookie-expired case.
+ */
+const AZURE_SIGN_IN_REQUIRED = new Set([
+  '50058', // session information is not sufficient for single sign-on
+  '50133', // session is invalid (expired or revoked)
+  '50173', // grant expired, e.g. after a password change
+  '50072', // MFA enrolment required
+  '50074', // strong authentication required
+  '50076', // MFA required
+  '50078', // MFA claim expired
+  '50079', // MFA enrolment required
+  '50097', // device authentication required
+]);
+
+/**
+ * Detects Azure AD's JS-rendered sign-in page.
+ *
+ * It carries no `<form>` and no `<input>`, which is why `needsInteractiveLogin`
+ * cannot see it: the only signal is the `sErrorCode` in its `$Config` blob.
+ * Returns a short description when the code means a person must sign in.
+ */
+export function idpSignInRequired(html: string): string | null {
+  const code = /["']sErrorCode["']\s*:\s*["'](\d+)["']/.exec(html)?.[1];
+  if (!code) return null;
+  return AZURE_SIGN_IN_REQUIRED.has(code) ? `Azure AD error ${code}` : null;
 }
 
 /** A stable fingerprint of the session cookies, to prove renewal happened. */

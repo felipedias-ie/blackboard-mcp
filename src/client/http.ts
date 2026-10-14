@@ -67,10 +67,10 @@ export class HttpClient {
    * provider and racing to overwrite the stored session.
    */
   private refreshing: Promise<boolean> | null = null;
-  private refreshAttempts = 0;
-  private lastRefresh = 0;
-  /** Set false when renewal is impossible, so we stop trying. */
-  private canRefresh = true;
+  /** Consecutive failed renewals; drives the backoff. */
+  private refreshFailures = 0;
+  /** Earliest time another renewal may be attempted. */
+  private nextRefreshAt = 0;
 
   constructor(
     readonly session: Session,
@@ -78,41 +78,57 @@ export class HttpClient {
   ) {}
 
   /**
-   * Renews the session silently, at most once per 30 seconds.
+   * Renews the session silently.
    *
-   * Returns false when renewal is impossible. No identity-provider cookies, or
-   * the provider itself wants a real sign-in. So callers surface the original
+   * Returns false when renewal did not happen, so callers surface the original
    * SESSION_EXPIRED with its instruction to re-run `auth login`.
+   *
+   * Failure never disables renewal for good. This client lives as long as the
+   * MCP server, which runs for days across laptop sleeps and network changes,
+   * so a counter that gave up after a few failures turned one bad moment (Wi-Fi
+   * not yet back after wake) into "never renews again until restarted". Failures
+   * back off instead, and every attempt first checks whether the user has signed
+   * in again in the meantime.
    */
   async tryRefresh(): Promise<boolean> {
-    if (!this.canRefresh) return false;
     if (this.refreshing) return this.refreshing;
 
-    if (Date.now() - this.lastRefresh < 30_000) return false;
-    if (this.refreshAttempts >= 3) {
-      this.canRefresh = false;
-      return false;
-    }
-
-    this.refreshing = (async () => {
-      this.refreshAttempts += 1;
-      this.lastRefresh = Date.now();
-      const result = await refreshSession(this.session);
-      if (!result.ok) {
-        log.warn(`Silent session renewal failed: ${result.reason ?? 'unknown'}`);
-        // A provider demanding credentials will keep demanding them.
-        if (result.needsInteractiveLogin) this.canRefresh = false;
-        return false;
-      }
-      this.refreshAttempts = 0;
-      return true;
-    })();
-
+    this.refreshing = this.renew();
     try {
       return await this.refreshing;
     } finally {
       this.refreshing = null;
     }
+  }
+
+  private async renew(): Promise<boolean> {
+    // A fresh `auth login` (or a sibling process's renewal) already fixed it.
+    if (await this.session.adoptIfNewer()) {
+      this.refreshFailures = 0;
+      this.nextRefreshAt = 0;
+      return true;
+    }
+
+    if (Date.now() < this.nextRefreshAt) return false;
+
+    const result = await refreshSession(this.session);
+    if (result.ok) {
+      this.refreshFailures = 0;
+      this.nextRefreshAt = 0;
+      return true;
+    }
+
+    this.refreshFailures += 1;
+    log.warn(`Silent session renewal failed: ${result.reason ?? 'unknown'}`);
+    // A provider demanding credentials will keep demanding them, so there is no
+    // point re-walking its chain every few seconds. Wait a couple of minutes
+    // (the stored-session check above still catches a re-login immediately).
+    // Anything else is probably transient: back off 30s, 1m, 2m ... capped.
+    const delay = result.needsInteractiveLogin
+      ? 2 * 60_000
+      : Math.min(30_000 * 2 ** (this.refreshFailures - 1), 10 * 60_000);
+    this.nextRefreshAt = Date.now() + delay;
+    return false;
   }
 
   private allowedHost(host: string): boolean {

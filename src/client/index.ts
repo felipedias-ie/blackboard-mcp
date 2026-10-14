@@ -181,6 +181,8 @@ export class BlackboardClient {
     const tick = async (): Promise<void> => {
       if (stopped) return;
       try {
+        // The user may have signed in again since this process started.
+        await this.http.session.adoptIfNewer();
         const remaining = await this.sessionSecondsRemaining();
         if (remaining <= 0) {
           log.info('Session expired; attempting silent renewal');
