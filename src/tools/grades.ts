@@ -321,7 +321,9 @@ export function registerGradeTools(server: McpServer): void {
                 { field: 'submitted at', value: when(status.submittedAt) },
                 { field: 'late', value: status.late === true ? 'YES' : undefined },
               ])
-            : '_No submission on record for this item._';
+            : status.draft
+              ? '_A draft is saved but has not been submitted._'
+              : '_No submission on record for this item._';
         } else {
           attemptsBody = blocks.join('\n\n');
         }
@@ -742,7 +744,13 @@ export function registerGradeTools(server: McpServer): void {
         [
           `# ${column ? columnName(column) : columnId}`,
           '',
-          status.submitted ? '**Submitted.**' : '**Not submitted.**',
+          status.submitted
+            ? status.draft
+              ? '**Submitted.** A newer draft is also saved and has not been submitted.'
+              : '**Submitted.**'
+            : status.draft
+              ? '**Not submitted.** A draft is saved but has not been handed in.'
+              : '**Not submitted.**',
           '',
           table([
             { field: 'attemptId', value: status.attemptId },

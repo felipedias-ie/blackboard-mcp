@@ -728,9 +728,12 @@ export class BlackboardClient {
    *    submission at all, so it is not a discriminator on its own.
    *  - `getColumnGrades` throws NOT_FOUND when no grade record exists yet,
    *    which *is* meaningful: no record means no attempt.
+   *  - An attempt id is not a submission either. A saved draft is an attempt
+   *    (see `readAttempts`), so "has an attempt id" reported unsent drafts
+   *    as submitted.
    *
-   * So the authority is the grade record's attempt ids, with a missing record
-   * treated as "not submitted".
+   * So the authority is the attempts the grade record points at, read for
+   * their own status, with a missing record treated as "not submitted".
    */
   async getSubmissionStatus(
     courseId: string,
@@ -738,6 +741,8 @@ export class BlackboardClient {
     userId?: string,
   ): Promise<{
     submitted: boolean;
+    /** A draft is saved. With `submitted`, it is newer than the submission. */
+    draft?: boolean;
     attemptId?: string;
     status?: string;
     submittedAt?: string;
@@ -757,19 +762,20 @@ export class BlackboardClient {
     const grade = grades[0];
     if (!grade) return { submitted: false };
 
-    const attemptId =
-      grade.lastAttemptId ?? grade.firstAttemptId ?? grade.highestAttemptId ?? undefined;
-    if (!attemptId) {
+    const ids = attemptIds(grade);
+    if (ids.length === 0) {
       return { submitted: false, status: grade.status ?? undefined };
     }
 
-    // Read the attempt itself for the authoritative timestamp and receipt.
-    let attempt: BbAttempt | undefined;
-    try {
-      attempt = await this.getAttempt(courseId, attemptId);
-    } catch {
-      /* the id is enough to know something was submitted */
+    const { handedIn, draft, unreadable } = await this.readAttempts(courseId, grade);
+    if (handedIn.length === 0 && unreadable === 0 && draft) {
+      return { submitted: false, draft: true, attemptId: draft.id, status: draft.status };
     }
+
+    // An attempt that could not be read still exists, and only one draft can
+    // be open at a time, so it is taken as handed in, as it always was.
+    const attempt = handedIn[0];
+    const attemptId = attempt?.id ?? ids.find((id) => id !== draft?.id) ?? ids[0];
 
     let attemptCount: number | undefined;
     if (grade.id) {
@@ -779,12 +785,44 @@ export class BlackboardClient {
 
     return {
       submitted: true,
+      draft: draft ? true : undefined,
       attemptId,
       status: attempt?.status ?? grade.status ?? undefined,
       submittedAt: attempt?.attemptReceipt?.submissionDate ?? attempt?.attemptDate ?? undefined,
       late: attempt?.attemptReceipt?.lateSubmission,
       attemptCount,
     };
+  }
+
+  /**
+   * Reads the attempts a grade record points at, separating work the student
+   * handed in from a saved draft.
+   *
+   * The grade record cannot answer this by itself, which is why every attempt
+   * is read. Measured on a real gradebook: a saved draft is an attempt like any
+   * other, with an id on the record; the record's `submissionStatus` reads
+   * `DRAFT_SAVED_STUDENT` even when an *earlier* attempt was submitted; and a
+   * record can be GRADED when its only attempt is an unsent draft. The
+   * attempts' own statuses were right in every case. There are rarely more
+   * than two.
+   */
+  async readAttempts(
+    courseId: string,
+    grade: BbGrade,
+  ): Promise<{ handedIn: BbAttempt[]; draft?: BbAttempt; unreadable: number }> {
+    const handedIn: BbAttempt[] = [];
+    let draft: BbAttempt | undefined;
+    let unreadable = 0;
+    for (const id of attemptIds(grade)) {
+      try {
+        const attempt = await this.getAttempt(courseId, id);
+        if (isDraftAttempt(attempt)) draft = attempt;
+        else handedIn.push(attempt);
+      } catch {
+        unreadable += 1;
+      }
+    }
+    return { handedIn, draft, unreadable };
   }
 
   // ── submission (writes) ─────────────────────────────────────────────────
@@ -1070,6 +1108,17 @@ export function displayName(user: BbUser): string {
   const parts = [user.givenName, user.familyName].filter(Boolean);
   if (parts.length) return parts.join(' ');
   return preferred ?? user.userName ?? user.id;
+}
+
+/** The distinct attempts a grade record points at, latest first. */
+export function attemptIds(grade: BbGrade): string[] {
+  const ids = [grade.lastAttemptId, grade.firstAttemptId, grade.highestAttemptId];
+  return [...new Set(ids.filter((id): id is string => Boolean(id)))];
+}
+
+/** A saved, unsent draft. Every other attempt status means it was handed in. */
+export function isDraftAttempt(attempt: Pick<BbAttempt, 'status'>): boolean {
+  return attempt.status === 'IN_PROGRESS';
 }
 
 /** The `offset` a paging link asks for, or undefined when it carries none. */
