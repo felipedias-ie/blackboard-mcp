@@ -100,7 +100,12 @@ export interface BbTerm {
 export interface BbCourseRole {
   id?: string;
   identifier?: string;
-  courseName?: string;
+  /**
+   * A display name on some tenants, but on Ultra a localisation key such as
+   * `{languageKey: "S.name", bundle: "course_roles"}`. Never print this as a
+   * string without checking: use `roleLabel()`.
+   */
+  courseName?: string | { languageKey?: string; bundle?: string };
   roleBucket?: string;
   isActAsInstructor?: boolean;
   sortOrder?: number;
@@ -122,6 +127,57 @@ export interface BbMembership {
   courseCardColorIndex?: number;
   course?: BbCourse;
   user?: BbUser;
+}
+
+// ── groups ────────────────────────────────────────────────────────────────
+
+/** The sign-up sheet attached to a group set (the Ultra "Group Assignment" page). */
+export interface BbSignUpSheet {
+  name?: string;
+  description?: BbText;
+  enrollmentStartDate?: string;
+  enrollmentEndDate?: string;
+  autoEnrollment?: boolean;
+  allowMembersToChangeGroups?: boolean;
+  isShowGroupMembers?: boolean;
+}
+
+/** A set of groups created together, such as the teams for one assignment. */
+export interface BbGroupSet {
+  id: string;
+  title?: string;
+  description?: BbText;
+  isAvailable?: boolean;
+  /** Present with `expand=studentCount,groupCount`. */
+  studentCount?: number;
+  groupCount?: number;
+  maximumEnrollment?: number;
+  isSelfEnrolledAllowed?: boolean;
+  signUpSheet?: BbSignUpSheet;
+}
+
+/** One entry of `group.memberships`. Names are not included: join them from the roster. */
+export interface BbGroupMember {
+  userId: string;
+  groupId?: string;
+  membershipId?: string;
+}
+
+export interface BbGroup {
+  id: string;
+  title?: string;
+  groupSetId?: string;
+  isAvailable?: boolean;
+  studentCount?: number;
+  maximumEnrollment?: number;
+  isSelfEnrolledAllowed?: boolean;
+  signUpSheet?: BbSignUpSheet;
+  /**
+   * Who is in the group. Only present when the list is requested with
+   * `expand=memberships&membershipAvailable=true`, which is what the Ultra
+   * sign-up page sends. Without it a student sees `studentCount` and nothing else.
+   */
+  memberships?: BbGroupMember[];
 }
 
 // ── content ───────────────────────────────────────────────────────────────

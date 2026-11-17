@@ -1,6 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getClient } from '../tools/helpers.js';
-import { courseLabel, displayName, fileDetailOf } from '../client/index.js';
+import { courseLabel, displayName, fileDetailOf, roleLabel } from '../client/index.js';
 import { toBlackboardError } from '../lib/errors.js';
 import { handlerLabel } from '../tools/content.js';
 
@@ -77,7 +77,7 @@ export function registerResources(server: McpServer): void {
                   name: courseLabel(m.course),
                   code: m.course?.displayId ?? m.course?.courseId,
                   term: m.course?.term?.name,
-                  role: m.courseRole?.courseName ?? m.role,
+                  role: roleLabel(m),
                   available: m.course?.isAvailable !== false,
                   isOrganization: m.course?.isOrganization === true,
                   lastAccess: m.lastAccessDate,

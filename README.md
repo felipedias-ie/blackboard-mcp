@@ -292,7 +292,8 @@ Every course tool takes a `courseId`, an internal id like `_12345_1` rather than
 | `bb_list_courses` | Enrolled courses with ids, terms, roles. **Start here** |
 | `bb_get_course` | Course detail and enabled tools |
 | `bb_list_terms` | Academic terms |
-| `bb_list_roster` | Participants and their roles |
+| `bb_list_roster` | Participants and their roles. Takes an optional `groupId` to list one group's members |
+| `bb_list_groups` | Group sets and groups: capacity, sign-up window, who is in each. `mine` shows your own team |
 
 ### Content
 | Tool | Purpose |

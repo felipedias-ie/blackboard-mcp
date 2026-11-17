@@ -10,7 +10,7 @@ import type {
   BbCalendarItem, BbTodoItem, BbTodoResponse, BbConversation,
   BbConversationMessage, BbForumMessage, BbAttendanceRecord, BbStreamResponse,
   BbFileDetail, BbGradeSchema, BbSubmissionService, BbGradeAttemptRow,
-  BbQuestionAttempt, BbAnswerGrade,
+  BbQuestionAttempt, BbAnswerGrade, BbGroup, BbGroupSet,
 } from './types.js';
 
 export * from './types.js';
@@ -349,13 +349,69 @@ export class BlackboardClient {
     return this.paginate<BbTerm>(expand('terms'), opts);
   }
 
-  async listRoster(courseId: string, opts: ListOptions = {}): Promise<BbMembership[]> {
+  /**
+   * Course participants. With `groupId`, only the members of that group: the
+   * Ultra group page asks the roster for exactly this, with
+   * `membershipAvailable=true`, and that works for a student.
+   */
+  async listRoster(
+    courseId: string,
+    opts: ListOptions & { groupId?: string } = {},
+  ): Promise<BbMembership[]> {
+    const { groupId, ...list } = opts;
     return this.paginate<BbMembership>(expand('courseRoster', { courseId }), {
-      ...opts,
-      query: { expand: 'user,courseRole' },
+      ...list,
+      query: {
+        expand: 'user,courseRole',
+        ...(groupId ? { groupId, membershipAvailable: true } : {}),
+      },
     });
   }
 
+  /** Group sets (sign-up sheets) with their group and student counts. */
+  async listGroupSets(courseId: string): Promise<BbGroupSet[]> {
+    return this.paginate<BbGroupSet>(expand('courseGroupSets', { courseId }), {
+      limit: 100,
+      query: { expand: 'studentCount,groupCount,signUpSheet', sort: 'title(asc),id(desc)' },
+    });
+  }
+
+  /**
+   * Groups with, by default, who is in each one.
+   *
+   * Plain `GET groups` gives a student only names and capacity, and the
+   * `/public/v1/.../groups/{id}/users` route answers 403. The Ultra sign-up page
+   * gets the members from `expand=memberships&membershipAvailable=true`, so this
+   * sends the same. Where a tenant still omits them, it falls back to the roster
+   * filtered by group, which is what the page's "members" panel does.
+   */
+  async listGroups(courseId: string, opts: { members?: boolean } = {}): Promise<BbGroup[]> {
+    const withMembers = opts.members !== false;
+    const groups = await this.paginate<BbGroup>(expand('courseGroups', { courseId }), {
+      limit: 200,
+      query: {
+        expand: withMembers ? 'studentCount,memberships,signUpSheet' : 'studentCount,signUpSheet',
+        membershipAvailable: true,
+      },
+    });
+    if (!withMembers) return groups;
+
+    await Promise.all(
+      groups
+        .filter((g) => g.memberships === undefined && (g.studentCount ?? 1) > 0)
+        .map(async (g) => {
+          const roster = await this.listRoster(courseId, { groupId: g.id, limit: 100 }).catch(
+            () => undefined,
+          );
+          if (roster) {
+            g.memberships = roster.map((m) => ({ userId: m.userId, groupId: g.id, membershipId: m.id }));
+          }
+        }),
+    );
+    return groups;
+  }
+
+  /** @deprecated Use `listGroups`, which is typed and can include the members. */
   async listCourseGroups(courseId: string, opts: ListOptions = {}): Promise<unknown[]> {
     return this.paginate(expand('courseGroups', { courseId }), opts);
   }
@@ -524,10 +580,18 @@ export class BlackboardClient {
    */
   async getColumnGrades(courseId: string, columnId: string, userId?: string): Promise<BbGrade[]> {
     const uid = userId ?? (await this.selfId());
-    return this.paginate<BbGrade>(expand('columnGrades', { courseId, columnId }), {
-      limit: 100,
-      query: { userId: uid, expand: 'lastFeedbackAuthor,lastInstructorNotesAuthor' },
-    });
+    try {
+      return await this.paginate<BbGrade>(expand('columnGrades', { courseId, columnId }), {
+        limit: 100,
+        query: { userId: uid, expand: 'lastFeedbackAuthor,lastInstructorNotesAuthor' },
+      });
+    } catch (err) {
+      // A column the student has not touched has no grade row, and Blackboard
+      // answers 404 rather than an empty page. That is "nothing recorded yet",
+      // not a failure, so let the caller show the column on its own.
+      if (err instanceof BlackboardError && err.code === 'NOT_FOUND') return [];
+      throw err;
+    }
   }
 
   /** Course-wide grade list for a user, with columns expanded. */
@@ -1195,6 +1259,29 @@ export class BlackboardClient {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
+
+const ROLE_NAMES: Record<string, string> = {
+  S: 'Student',
+  P: 'Instructor',
+  T: 'Teaching assistant',
+  G: 'Grader',
+  B: 'Course builder',
+  U: 'Guest',
+};
+
+/**
+ * A readable role for a course membership.
+ *
+ * On Ultra, `courseRole.courseName` is a localisation key object, not text, so
+ * printing it gave "[object Object]" in every roster and course list. Use the
+ * name when it really is a string, otherwise the single-letter role code.
+ */
+export function roleLabel(membership: Pick<BbMembership, 'role' | 'courseRole'>): string {
+  const named = membership.courseRole?.courseName;
+  if (typeof named === 'string' && named.trim()) return named.trim();
+  const code = membership.courseRole?.identifier ?? membership.role ?? '';
+  return ROLE_NAMES[code] ?? code;
+}
 
 export function displayName(user: BbUser): string {
   const preferred = user.preferredDisplayName?.trim();
